@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/gin-gonic/gin"
 	"log"
-	"net/http"
 	"github.com/group-project/authentication/internal/config"
+	"github.com/group-project/authentication/internal/router"
+	"github.com/group-project/authentication/internal/handler"
 )
 
 
@@ -13,13 +13,13 @@ func main(){
 	env:=config.Load()
 	log.Printf("%+v\n", env)
 
-	router := gin.Default()
+	auth:=handler.NewAuthHandler()
 
-	router.GET("/health",func (c *gin.Context){
-		c.JSON(http.StatusOK, gin.H{"status":"ok"})
-	})
+	ro:=router.NewRouter(auth)
+	r:=ro.Router()
+	
 
-	if 	err:= router.Run(":" + env.ServerPort); err != nil {
+	if 	err:= r.Run(":" + env.ServerPort); err != nil {
 		log.Fatal(err)
 	}
 }
