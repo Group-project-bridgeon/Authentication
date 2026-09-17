@@ -1,2 +1,4 @@
+MAIN := ./cmd/server
+
 run:
-	go run cmd/server/main.go
+	go run $(MAIN)
