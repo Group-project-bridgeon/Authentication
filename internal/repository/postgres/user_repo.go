@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/group-project/authentication/internal/domain"
 	"github.com/group-project/authentication/internal/repository/postgres/sqlcdb"
 	"github.com/jackc/pgx/v5"
@@ -42,6 +43,17 @@ func (r *UserRepo) Create(ctx context.Context, u *domain.User) (*domain.User, er
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	row, err := r.q.GetUserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrUserNotFound
+		}
+		return nil, err
+	}
+	return toDomain(row), nil
+}
+
+func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
+	row, err := r.q.GetUserByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrUserNotFound

@@ -2,7 +2,8 @@ package dto
 
 import (
 	"time"
-	"uuid"
+
+	"github.com/google/uuid"
 )
 
 type RegisterRequest struct {
@@ -12,7 +13,7 @@ type RegisterRequest struct {
 }
 
 type LoginRequest struct {
-	Email    string `json:"email" binding:"required,email"`
+	Email    string `json:"email" binding:"required"`
 	Password string `json:"password" binding:"required"`
 }
 
@@ -21,4 +22,11 @@ type UserResponse struct {
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type AuthResponse struct {
+	User        UserResponse `json:"user"`
+	AccessToken string       `json:"access_token"`
+	TokenType   string       `json:"token_type"`
+	ExpiresIn   int64        `json:"expires_in"`
 }

@@ -20,14 +20,14 @@ import (
 )
 
 func run() error {
-	_=godotenv.Load()
+	_ = godotenv.Load()
 
-	cfg, err:= config.Load()
+	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 
-	ctx, stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
@@ -36,13 +36,14 @@ func run() error {
 	}
 	defer pool.Close()
 
-	usrRepo:=postgres.NewUserRepo(pool)
-	authSvc:= service.NewAuthService(usrRepo, helper.NewBcrypt())
-	authHandler:= handler.NewAuthHandler(authSvc)
+	jwtManager := helper.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiry)
+	usrRepo := postgres.NewUserRepo(pool)
+	authSvc := service.NewAuthService(usrRepo, helper.NewBcrypt(), jwtManager)
+	authHandler := handler.NewAuthHandler(authSvc)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           router.NewRouter(authHandler).Router(),
+		Handler:           router.NewRouter(authHandler, jwtManager).Router(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

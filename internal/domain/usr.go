@@ -12,6 +12,7 @@ var (
 	ErrEmailTaken         = errors.New("email already registered")
 	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrInvalidInput       = errors.New("invalid input")
 )
 
 type User struct {
@@ -25,4 +26,5 @@ type User struct {
 type UserRepository interface {
 	Create(ctx context.Context, u *User) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
 }
