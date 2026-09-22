@@ -23,10 +23,11 @@ func NewAuthHandler(a *service.AuthService) *AuthHandler {
 
 func toUserResponse(u *domain.User) hdto.UserResponse {
 	return hdto.UserResponse{
-		ID:        u.ID,
-		Email:     u.Email,
-		Name:      u.Name,
-		CreatedAt: u.CreatedAt,
+		ID:         u.ID,
+		Email:      u.Email,
+		Name:       u.Name,
+		CreatedAt:  u.CreatedAt,
+		IsVerified: u.IsVerified,
 	}
 }
 
@@ -65,7 +66,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, toAuthResponse(result))
+	c.JSON(http.StatusCreated, hdto.RegisterResponse{
+		Message: result.Message,
+		User:    toUserResponse(result.User),
+	})
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -80,6 +84,13 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Password: req.Password,
 	})
 	if err != nil {
+		if errors.Is(err, domain.ErrEmailNotVerified) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "email is not verified, please verify your email before logging in",
+				"code":  "EMAIL_NOT_VERIFIED",
+			})
+			return
+		}
 		if errors.Is(err, domain.ErrInvalidCredentials) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
 			return
@@ -90,6 +101,67 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, toAuthResponse(result))
+}
+
+func (h *AuthHandler) VerifyEmail(c *gin.Context) {
+	var req hdto.VerifyEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
+		return
+	}
+
+	result, err := h.auth.VerifyEmail(c.Request.Context(), dto.VerifyEmailInput{
+		Email: req.Email,
+		OTP:   req.OTP,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidOTP) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or expired verification code"})
+			return
+		}
+		if errors.Is(err, domain.ErrOTPMaxAttempts) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many invalid attempts, please request a new verification code"})
+			return
+		}
+		if errors.Is(err, domain.ErrAlreadyVerified) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "email is already verified"})
+			return
+		}
+		slog.Error("verify email failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, toAuthResponse(result))
+}
+
+func (h *AuthHandler) ResendOTP(c *gin.Context) {
+	var req hdto.ResendOTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
+		return
+	}
+
+	err := h.auth.ResendOTP(c.Request.Context(), dto.ResendOTPInput{
+		Email: req.Email,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrOTPCooldown) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "please wait at least 60 seconds before requesting another code"})
+			return
+		}
+		if errors.Is(err, domain.ErrAlreadyVerified) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "email is already verified"})
+			return
+		}
+		slog.Error("resend OTP failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "verification code resent to your email",
+	})
 }
 
 func (h *AuthHandler) Me(c *gin.Context) {

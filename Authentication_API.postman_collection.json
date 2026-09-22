@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "a91e57c6-21f4-4dfc-a496-ec61e38b3215",
 		"name": "Authentication Service API",
-		"description": "Postman collection for the Go Authentication Microservice with PostgreSQL and JWT authentication.",
+		"description": "Postman collection for the Go Authentication Microservice with PostgreSQL, JWT authentication, and Email OTP verification.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
@@ -26,23 +26,6 @@
 		},
 		{
 			"name": "Register",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"if (pm.response.code === 201) {",
-							"    var jsonData = pm.response.json();",
-							"    if (jsonData.access_token) {",
-							"        pm.collectionVariables.set(\"token\", jsonData.access_token);",
-							"        console.log(\"Saved access_token to collection variable 'token'\");",
-							"    }",
-							"}"
-						],
-						"type": "text/javascript"
-					}
-				}
-			],
 			"request": {
 				"method": "POST",
 				"header": [
@@ -67,7 +50,84 @@
 						"register"
 					]
 				},
-				"description": "Registers a new user and returns user info with a JWT access token."
+				"description": "Registers a new user and dispatches a 6-digit OTP verification code via email."
+			},
+			"response": []
+		},
+		{
+			"name": "Verify Email",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 200) {",
+							"    var jsonData = pm.response.json();",
+							"    if (jsonData.access_token) {",
+							"        pm.collectionVariables.set(\"token\", jsonData.access_token);",
+							"        console.log(\"Saved access_token to collection variable 'token'\");",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"email\": \"testuser@example.com\",\n  \"otp\": \"123456\"\n}"
+				},
+				"url": {
+					"raw": "{{baseUrl}}/api/v1/auth/verify-email",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"auth",
+						"verify-email"
+					]
+				},
+				"description": "Verifies email with the 6-digit OTP and returns a JWT access token."
+			},
+			"response": []
+		},
+		{
+			"name": "Resend OTP",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"email\": \"testuser@example.com\"\n}"
+				},
+				"url": {
+					"raw": "{{baseUrl}}/api/v1/auth/resend-otp",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"auth",
+						"resend-otp"
+					]
+				},
+				"description": "Resends a new 6-digit verification code (rate-limited by 60s cooldown)."
 			},
 			"response": []
 		},
@@ -114,7 +174,7 @@
 						"login"
 					]
 				},
-				"description": "Authenticates user credentials and returns a JWT access token."
+				"description": "Authenticates verified user credentials and returns a JWT access token. Returns 403 Forbidden if email is not verified."
 			},
 			"response": []
 		},

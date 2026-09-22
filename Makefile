@@ -16,6 +16,7 @@ docker-down:
 
 migrate-up:
 	docker compose exec -T postgres psql -U postgres -d auth < db/migrations/000001_create_users.up.sql
+	docker compose exec -T postgres psql -U postgres -d auth < db/migrations/000002_add_email_verification.up.sql
 
 test:
 	go test -v ./...

@@ -37,8 +37,17 @@ func run() error {
 	defer pool.Close()
 
 	jwtManager := helper.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiry)
+	emailSender := helper.NewEmailSender(cfg.SMTP)
 	usrRepo := postgres.NewUserRepo(pool)
-	authSvc := service.NewAuthService(usrRepo, helper.NewBcrypt(), jwtManager)
+	verificationRepo := postgres.NewVerificationRepo(pool)
+
+	authSvc := service.NewAuthService(
+		usrRepo,
+		verificationRepo,
+		helper.NewBcrypt(),
+		jwtManager,
+		emailSender,
+	)
 	authHandler := handler.NewAuthHandler(authSvc)
 
 	srv := &http.Server{

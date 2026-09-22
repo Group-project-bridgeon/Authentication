@@ -17,11 +17,26 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+type VerifyEmailRequest struct {
+	Email string `json:"email" binding:"required,email"`
+	OTP   string `json:"otp" binding:"required,len=6"`
+}
+
+type ResendOTPRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
 type UserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         uuid.UUID `json:"id"`
+	Email      string    `json:"email"`
+	Name       string    `json:"name"`
+	CreatedAt  time.Time `json:"created_at"`
+	IsVerified bool      `json:"is_verified"`
+}
+
+type RegisterResponse struct {
+	Message string       `json:"message"`
+	User    UserResponse `json:"user"`
 }
 
 type AuthResponse struct {

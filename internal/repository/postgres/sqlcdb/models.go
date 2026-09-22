@@ -9,6 +9,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type EmailVerification struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	OtpHash    string
+	Attempts   int32
+	ExpiresAt  pgtype.Timestamptz
+	LastSentAt pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+}
+
 type User struct {
 	ID           uuid.UUID
 	Email        string
@@ -16,4 +26,5 @@ type User struct {
 	PasswordHash string
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
+	IsVerified   bool
 }

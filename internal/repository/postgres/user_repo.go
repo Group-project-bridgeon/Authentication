@@ -63,6 +63,10 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, err
 	return toDomain(row), nil
 }
 
+func (r *UserRepo) SetVerified(ctx context.Context, id uuid.UUID) error {
+	return r.q.SetUserVerified(ctx, id)
+}
+
 func toDomain(r sqlcdb.User) *domain.User {
 	return &domain.User{
 		ID:           r.ID,
@@ -70,5 +74,6 @@ func toDomain(r sqlcdb.User) *domain.User {
 		Name:         r.Name,
 		PasswordHash: r.PasswordHash,
 		CreatedAt:    r.CreatedAt.Time,
+		IsVerified:   r.IsVerified,
 	}
 }

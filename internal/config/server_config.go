@@ -6,11 +6,21 @@ import (
 	"time"
 )
 
+type SMTPConfig struct {
+	Host     string
+	Port     string
+	Username string
+	Password string
+	From     string
+	FromName string
+}
+
 type Config struct {
 	Port        string
 	DatabaseURL string
 	JWTSecret   string
 	JWTExpiry   time.Duration
+	SMTP        SMTPConfig
 }
 
 func Load() (*Config, error) {
@@ -40,10 +50,35 @@ func Load() (*Config, error) {
 		}
 	}
 
+	smtpPort := os.Getenv("SMTP_PORT")
+	if smtpPort == "" {
+		smtpPort = "587"
+	}
+
+	smtpFrom := os.Getenv("SMTP_FROM")
+	if smtpFrom == "" {
+		smtpFrom = "noreply@example.com"
+	}
+
+	smtpFromName := os.Getenv("SMTP_FROM_NAME")
+	if smtpFromName == "" {
+		smtpFromName = "Authentication Service"
+	}
+
+	smtpConfig := SMTPConfig{
+		Host:     os.Getenv("SMTP_HOST"),
+		Port:     smtpPort,
+		Username: os.Getenv("SMTP_USERNAME"),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		From:     smtpFrom,
+		FromName: smtpFromName,
+	}
+
 	return &Config{
 		Port:        port,
 		DatabaseURL: dbURL,
 		JWTSecret:   jwtSecret,
 		JWTExpiry:   jwtExpiry,
+		SMTP:        smtpConfig,
 	}, nil
 }

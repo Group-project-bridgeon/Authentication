@@ -15,9 +15,23 @@ type LoginInput struct {
 	Password string
 }
 
+type VerifyEmailInput struct {
+	Email string
+	OTP   string
+}
+
+type ResendOTPInput struct {
+	Email string
+}
+
 type AuthResult struct {
 	User      *domain.User
 	Token     string
 	TokenType string
 	ExpiresIn int64
+}
+
+type RegisterResult struct {
+	User    *domain.User
+	Message string
 }

@@ -35,6 +35,8 @@ func (s *Route) Router() *gin.Engine {
 	{
 		api.POST("/register", s.authHandler.Register)
 		api.POST("/login", s.authHandler.Login)
+		api.POST("/verify-email", s.authHandler.VerifyEmail)
+		api.POST("/resend-otp", s.authHandler.ResendOTP)
 
 		// Dedicated JWT protected routes
 		protected := api.Group("")
