@@ -40,10 +40,12 @@ func run() error {
 	emailSender := helper.NewEmailSender(cfg.SMTP)
 	usrRepo := postgres.NewUserRepo(pool)
 	verificationRepo := postgres.NewVerificationRepo(pool)
+	passwordResetRepo := postgres.NewPasswordResetRepo(pool)
 
 	authSvc := service.NewAuthService(
 		usrRepo,
 		verificationRepo,
+		passwordResetRepo,
 		helper.NewBcrypt(),
 		jwtManager,
 		emailSender,

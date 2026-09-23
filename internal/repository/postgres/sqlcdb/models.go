@@ -19,6 +19,16 @@ type EmailVerification struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type PasswordReset struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	OtpHash    string
+	Attempts   int32
+	ExpiresAt  pgtype.Timestamptz
+	LastSentAt pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+}
+
 type User struct {
 	ID           uuid.UUID
 	Email        string

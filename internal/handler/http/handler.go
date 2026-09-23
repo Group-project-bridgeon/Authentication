@@ -164,6 +164,60 @@ func (h *AuthHandler) ResendOTP(c *gin.Context) {
 	})
 }
 
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	var req hdto.ForgotPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
+		return
+	}
+
+	err := h.auth.ForgotPassword(c.Request.Context(), dto.ForgotPasswordInput{
+		Email: req.Email,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrOTPCooldown) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "please wait at least 60 seconds before requesting another code"})
+			return
+		}
+		slog.Error("forgot password failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "if that email is registered, a password reset code has been sent",
+	})
+}
+
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var req hdto.ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "details": err.Error()})
+		return
+	}
+
+	result, err := h.auth.ResetPassword(c.Request.Context(), dto.ResetPasswordInput{
+		Email:       req.Email,
+		OTP:         req.OTP,
+		NewPassword: req.NewPassword,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrInvalidOTP) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid or expired verification code"})
+			return
+		}
+		if errors.Is(err, domain.ErrOTPMaxAttempts) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many invalid attempts, please request a new verification code"})
+			return
+		}
+		slog.Error("reset password failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, toAuthResponse(result))
+}
+
 func (h *AuthHandler) Me(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {

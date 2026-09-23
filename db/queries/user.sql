@@ -13,3 +13,8 @@ SELECT * FROM users WHERE id = $1;
 UPDATE users
 SET is_verified = TRUE, updated_at = now()
 WHERE id = $1;
+
+-- name: UpdatePasswordHashAndVerify :exec
+UPDATE users
+SET password_hash = $2, is_verified = TRUE, updated_at = now()
+WHERE id = $1;

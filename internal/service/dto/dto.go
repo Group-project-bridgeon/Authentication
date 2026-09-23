@@ -24,6 +24,16 @@ type ResendOTPInput struct {
 	Email string
 }
 
+type ForgotPasswordInput struct {
+	Email string
+}
+
+type ResetPasswordInput struct {
+	Email       string
+	OTP         string
+	NewPassword string
+}
+
 type AuthResult struct {
 	User      *domain.User
 	Token     string

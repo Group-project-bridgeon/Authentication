@@ -86,3 +86,19 @@ func (q *Queries) SetUserVerified(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, setUserVerified, id)
 	return err
 }
+
+const updatePasswordHashAndVerify = `-- name: UpdatePasswordHashAndVerify :exec
+UPDATE users
+SET password_hash = $2, is_verified = TRUE, updated_at = now()
+WHERE id = $1
+`
+
+type UpdatePasswordHashAndVerifyParams struct {
+	ID           uuid.UUID
+	PasswordHash string
+}
+
+func (q *Queries) UpdatePasswordHashAndVerify(ctx context.Context, arg UpdatePasswordHashAndVerifyParams) error {
+	_, err := q.db.Exec(ctx, updatePasswordHashAndVerify, arg.ID, arg.PasswordHash)
+	return err
+}

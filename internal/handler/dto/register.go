@@ -26,6 +26,16 @@ type ResendOTPRequest struct {
 	Email string `json:"email" binding:"required,email"`
 }
 
+type ForgotPasswordRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+type ResetPasswordRequest struct {
+	Email       string `json:"email" binding:"required,email"`
+	OTP         string `json:"otp" binding:"required,len=6"`
+	NewPassword string `json:"new_password" binding:"required,min=8,max=72"`
+}
+
 type UserResponse struct {
 	ID         uuid.UUID `json:"id"`
 	Email      string    `json:"email"`

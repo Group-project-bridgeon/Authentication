@@ -12,6 +12,7 @@ import (
 
 type EmailSender interface {
 	SendOTP(ctx context.Context, toEmail, toName, otp string) error
+	SendPasswordResetOTP(ctx context.Context, toEmail, toName, otp string) error
 }
 
 // SMTPEmailSender sends emails via standard SMTP.
@@ -42,8 +43,31 @@ func (s *SMTPEmailSender) SendOTP(_ context.Context, toEmail, toName, otp string
 		auth = smtp.PlainAuth("", s.username, s.password, s.host)
 	}
 
-	subject := "Your Verification Code"
-	body := fmt.Sprintf("Hello %s,\r\n\r\nYour verification code is: %s\r\n\r\nThis code will expire in 10 minutes.\r\nIf you did not request this, please ignore this email.\r\n", toName, otp)
+	subject := "Your Email Verification Code"
+	body := fmt.Sprintf("Hello %s,\r\n\r\nYour email verification code is: %s\r\n\r\nThis code will expire in 10 minutes.\r\nIf you did not request this, please ignore this email.\r\n", toName, otp)
+
+	msg := []byte(strings.Join([]string{
+		fmt.Sprintf("From: %s <%s>", s.fromName, s.from),
+		fmt.Sprintf("To: %s", toEmail),
+		fmt.Sprintf("Subject: %s", subject),
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=\"UTF-8\"",
+		"",
+		body,
+	}, "\r\n"))
+
+	return smtp.SendMail(addr, auth, s.from, []string{toEmail}, msg)
+}
+
+func (s *SMTPEmailSender) SendPasswordResetOTP(_ context.Context, toEmail, toName, otp string) error {
+	addr := fmt.Sprintf("%s:%s", s.host, s.port)
+	var auth smtp.Auth
+	if s.username != "" && s.password != "" {
+		auth = smtp.PlainAuth("", s.username, s.password, s.host)
+	}
+
+	subject := "Your Password Reset Code"
+	body := fmt.Sprintf("Hello %s,\r\n\r\nYour password reset code is: %s\r\n\r\nThis code will expire in 10 minutes.\r\nIf you did not request a password reset, please secure your account immediately.\r\n", toName, otp)
 
 	msg := []byte(strings.Join([]string{
 		fmt.Sprintf("From: %s <%s>", s.fromName, s.from),
@@ -67,6 +91,15 @@ func NewConsoleEmailSender() *ConsoleEmailSender {
 
 func (c *ConsoleEmailSender) SendOTP(_ context.Context, toEmail, toName, otp string) error {
 	slog.Info("📨 [DEV EMAIL SENDER] Verification OTP",
+		"to_email", toEmail,
+		"to_name", toName,
+		"otp", otp,
+	)
+	return nil
+}
+
+func (c *ConsoleEmailSender) SendPasswordResetOTP(_ context.Context, toEmail, toName, otp string) error {
+	slog.Info("🔐 [DEV EMAIL SENDER] Password Reset OTP",
 		"to_email", toEmail,
 		"to_name", toName,
 		"otp", otp,

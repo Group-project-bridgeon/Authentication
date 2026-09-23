@@ -67,6 +67,13 @@ func (r *UserRepo) SetVerified(ctx context.Context, id uuid.UUID) error {
 	return r.q.SetUserVerified(ctx, id)
 }
 
+func (r *UserRepo) UpdatePassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
+	return r.q.UpdatePasswordHashAndVerify(ctx, sqlcdb.UpdatePasswordHashAndVerifyParams{
+		ID:           id,
+		PasswordHash: passwordHash,
+	})
+}
+
 func toDomain(r sqlcdb.User) *domain.User {
 	return &domain.User{
 		ID:           r.ID,

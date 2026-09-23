@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -29,26 +30,29 @@ type TokenGenerator interface {
 }
 
 type AuthService struct {
-	users         domain.UserRepository
-	verifications domain.VerificationRepository
-	hasher        PasswordHasher
-	tokens        TokenGenerator
-	emailSender   helper.EmailSender
+	users          domain.UserRepository
+	verifications  domain.VerificationRepository
+	passwordResets domain.PasswordResetRepository
+	hasher         PasswordHasher
+	tokens         TokenGenerator
+	emailSender    helper.EmailSender
 }
 
 func NewAuthService(
 	u domain.UserRepository,
 	v domain.VerificationRepository,
+	pr domain.PasswordResetRepository,
 	h PasswordHasher,
 	t TokenGenerator,
 	e helper.EmailSender,
 ) *AuthService {
 	return &AuthService{
-		users:         u,
-		verifications: v,
-		hasher:        h,
-		tokens:        t,
-		emailSender:   e,
+		users:          u,
+		verifications:  v,
+		passwordResets: pr,
+		hasher:         h,
+		tokens:         t,
+		emailSender:    e,
 	}
 }
 
@@ -94,7 +98,9 @@ func (s *AuthService) Register(ctx context.Context, in dto.RegisterInput) (*dto.
 	}
 
 	// Send verification code via email
-	_ = s.emailSender.SendOTP(ctx, user.Email, user.Name, otp)
+	if err := s.emailSender.SendOTP(ctx, user.Email, user.Name, otp); err != nil {
+		slog.Error("failed to dispatch verification email", "email", user.Email, "err", err)
+	}
 
 	return &dto.RegisterResult{
 		User:    user,
@@ -234,8 +240,119 @@ func (s *AuthService) ResendOTP(ctx context.Context, in dto.ResendOTPInput) erro
 		return err
 	}
 
-	_ = s.emailSender.SendOTP(ctx, user.Email, user.Name, otp)
+	if err := s.emailSender.SendOTP(ctx, user.Email, user.Name, otp); err != nil {
+		slog.Error("failed to dispatch resend OTP email", "email", user.Email, "err", err)
+	}
 	return nil
+}
+
+func (s *AuthService) ForgotPassword(ctx context.Context, in dto.ForgotPasswordInput) error {
+	email := normalize(in.Email)
+	user, err := s.users.GetByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, domain.ErrUserNotFound) {
+			// Anti-enumeration: always return generic success message
+			return nil
+		}
+		return err
+	}
+
+	// Check cooldown rate limit (60s)
+	if existing, err := s.passwordResets.GetByUserID(ctx, user.ID); err == nil && existing != nil {
+		if time.Since(existing.LastSentAt) < OTPCooldownDuration {
+			return domain.ErrOTPCooldown
+		}
+	}
+
+	otp, err := helper.GenerateOTP()
+	if err != nil {
+		return err
+	}
+
+	otpHash := helper.HashOTP(otp)
+
+	_, err = s.passwordResets.Upsert(ctx, &domain.PasswordReset{
+		UserID:    user.ID,
+		OtpHash:   otpHash,
+		Attempts:  0,
+		ExpiresAt: time.Now().Add(OTPExpirationDuration),
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := s.emailSender.SendPasswordResetOTP(ctx, user.Email, user.Name, otp); err != nil {
+		slog.Error("failed to dispatch password reset email", "email", user.Email, "err", err)
+	}
+	return nil
+}
+
+func (s *AuthService) ResetPassword(ctx context.Context, in dto.ResetPasswordInput) (*dto.AuthResult, error) {
+	email := normalize(in.Email)
+	otp := strings.TrimSpace(in.OTP)
+	if len(otp) == 0 {
+		return nil, domain.ErrInvalidOTP
+	}
+
+	user, err := s.users.GetByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, domain.ErrUserNotFound) {
+			return nil, domain.ErrInvalidOTP
+		}
+		return nil, err
+	}
+
+	resetRecord, err := s.passwordResets.GetByUserID(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check expiration
+	if time.Now().After(resetRecord.ExpiresAt) {
+		return nil, domain.ErrInvalidOTP
+	}
+
+	// Check max attempts
+	if resetRecord.Attempts >= MaxOTPAttempts {
+		return nil, domain.ErrOTPMaxAttempts
+	}
+
+	// Verify constant-time OTP hash
+	if !helper.CheckOTPHash(otp, resetRecord.OtpHash) {
+		attempts, _ := s.passwordResets.IncrementAttempts(ctx, user.ID)
+		if attempts >= MaxOTPAttempts {
+			return nil, domain.ErrOTPMaxAttempts
+		}
+		return nil, domain.ErrInvalidOTP
+	}
+
+	// Hash new password
+	hash, err := s.hasher.Hash(in.NewPassword)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update password in DB (also marks is_verified = true since email ownership was proven)
+	if err := s.users.UpdatePassword(ctx, user.ID, hash); err != nil {
+		return nil, err
+	}
+	_ = s.passwordResets.DeleteByUserID(ctx, user.ID)
+
+	user.PasswordHash = hash
+	user.IsVerified = true
+
+	// Issue token (Auto-Login)
+	token, err := s.tokens.Generate(user.ID, user.Email)
+	if err != nil {
+		return nil, err
+	}
+
+	return &dto.AuthResult{
+		User:      user,
+		Token:     token,
+		TokenType: "Bearer",
+		ExpiresIn: int64(s.tokens.Duration().Seconds()),
+	}, nil
 }
 
 func (s *AuthService) GetUserByEmail(ctx context.Context, email string) (*domain.User, error) {

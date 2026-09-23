@@ -39,16 +39,34 @@ type EmailVerification struct {
 	CreatedAt  time.Time
 }
 
+type PasswordReset struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	OtpHash    string
+	Attempts   int
+	ExpiresAt  time.Time
+	LastSentAt time.Time
+	CreatedAt  time.Time
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, u *User) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
 	SetVerified(ctx context.Context, id uuid.UUID) error
+	UpdatePassword(ctx context.Context, id uuid.UUID, passwordHash string) error
 }
 
 type VerificationRepository interface {
 	Upsert(ctx context.Context, v *EmailVerification) (*EmailVerification, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*EmailVerification, error)
+	IncrementAttempts(ctx context.Context, userID uuid.UUID) (int, error)
+	DeleteByUserID(ctx context.Context, userID uuid.UUID) error
+}
+
+type PasswordResetRepository interface {
+	Upsert(ctx context.Context, p *PasswordReset) (*PasswordReset, error)
+	GetByUserID(ctx context.Context, userID uuid.UUID) (*PasswordReset, error)
 	IncrementAttempts(ctx context.Context, userID uuid.UUID) (int, error)
 	DeleteByUserID(ctx context.Context, userID uuid.UUID) error
 }
