@@ -1,33 +1,52 @@
 package router
 
-import(
+import (
 	"net/http"
+
 	"github.com/gin-gonic/gin"
-	"github.com/group-project/authentication/internal/handler"
+	handler "github.com/group-project/authentication/internal/handler/http"
+	"github.com/group-project/authentication/internal/helper"
+	"github.com/group-project/authentication/internal/middleware"
 )
 
-type SetupRouter struct{
+type Route struct {
 	authHandler *handler.AuthHandler
+	jwtManager  *helper.JWTManager
 }
 
-func NewRouter(handler *handler.AuthHandler) *SetupRouter {
-	return &SetupRouter{
-		authHandler : handler,
+func NewRouter(h *handler.AuthHandler, j *helper.JWTManager) *Route {
+	return &Route{
+		authHandler: h,
+		jwtManager:  j,
 	}
 }
 
+func (s *Route) Router() *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Logger(), gin.Recovery(), middleware.CORS())
 
-
-func (s *SetupRouter) Router()*gin.Engine {
-	r := gin.Default()
-
-	r.GET("/health",func(c *gin.Context) {
-		 c.JSON(http.StatusOK,gin.H{
-			"status":"okay",
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": "okay",
 		})
 	})
 
-	r.GET("/login",s.authHandler.Login)
+	api := r.Group("/api/v1/auth")
+	{
+		api.POST("/register", s.authHandler.Register)
+		api.POST("/login", s.authHandler.Login)
+		api.POST("/verify-email", s.authHandler.VerifyEmail)
+		api.POST("/resend-otp", s.authHandler.ResendOTP)
+		api.POST("/forgot-password", s.authHandler.ForgotPassword)
+		api.POST("/reset-password", s.authHandler.ResetPassword)
+
+		// Dedicated JWT protected routes
+		protected := api.Group("")
+		protected.Use(middleware.JWTAuth(s.jwtManager))
+		{
+			protected.GET("/me", s.authHandler.Me)
+		}
+	}
 
 	return r
 }
