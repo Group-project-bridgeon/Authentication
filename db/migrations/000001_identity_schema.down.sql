@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS identity_auth_events;
+DROP TABLE IF EXISTS identity_email_verification_tokens;
+DROP TABLE IF EXISTS identity_password_reset_tokens;
+DROP TABLE IF EXISTS identity_refresh_tokens;
+DROP TABLE IF EXISTS identity_role_permissions;
+DROP TABLE IF EXISTS identity_user_roles;
+DROP TABLE IF EXISTS identity_permissions;
+DROP TABLE IF EXISTS identity_roles;
+DROP TABLE IF EXISTS identity_credentials;
+DROP TABLE IF EXISTS identity_external_identities;
+DROP TABLE IF EXISTS identity_users;
