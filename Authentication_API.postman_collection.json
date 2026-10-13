@@ -56,23 +56,6 @@
 		},
 		{
 			"name": "Verify Email",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"if (pm.response.code === 200) {",
-							"    var jsonData = pm.response.json();",
-							"    if (jsonData.access_token) {",
-							"        pm.collectionVariables.set(\"token\", jsonData.access_token);",
-							"        console.log(\"Saved access_token to collection variable 'token'\");",
-							"    }",
-							"}"
-						],
-						"type": "text/javascript"
-					}
-				}
-			],
 			"request": {
 				"method": "POST",
 				"header": [
@@ -97,7 +80,7 @@
 						"verify-email"
 					]
 				},
-				"description": "Verifies email with the 6-digit OTP and returns a JWT access token."
+				"description": "Verifies email with the 6-digit OTP so the user can log in."
 			},
 			"response": []
 		},
@@ -209,24 +192,7 @@
 			"response": []
 		},
 		{
-			"name": "Reset Password & Auto-Login",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"if (pm.response.code === 200) {",
-							"    var jsonData = pm.response.json();",
-							"    if (jsonData.access_token) {",
-							"        pm.collectionVariables.set(\"token\", jsonData.access_token);",
-							"        console.log(\"Saved access_token to collection variable 'token'\");",
-							"    }",
-							"}"
-						],
-						"type": "text/javascript"
-					}
-				}
-			],
+			"name": "Reset Password",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -251,7 +217,78 @@
 						"reset-password"
 					]
 				},
-				"description": "Resets user password with 6-digit OTP and automatically logs in by returning a valid JWT access token."
+				"description": "Resets user password with 6-digit OTP."
+			},
+			"response": []
+		},
+		{
+			"name": "Google OAuth - Initiate Login",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/v1/auth/google/login",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"auth",
+						"google",
+						"login"
+					]
+				},
+				"description": "Redirects user to Google OAuth 2.0 consent screen with a secure CSRF state cookie."
+			},
+			"response": []
+		},
+		{
+			"name": "Google OAuth - Callback",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"if (pm.response.code === 200) {",
+							"    var jsonData = pm.response.json();",
+							"    if (jsonData.access_token) {",
+							"        pm.collectionVariables.set(\"token\", jsonData.access_token);",
+							"        console.log(\"Saved access_token to collection variable 'token'\");",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{baseUrl}}/api/v1/auth/google/callback?code=YOUR_GOOGLE_AUTH_CODE&state=YOUR_STATE",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"auth",
+						"google",
+						"callback"
+					],
+					"query": [
+						{
+							"key": "code",
+							"value": "YOUR_GOOGLE_AUTH_CODE"
+						},
+						{
+							"key": "state",
+							"value": "YOUR_STATE"
+						}
+					]
+				},
+				"description": "Google OAuth redirect callback endpoint. Exchanges Google auth code for profile, upserts user, and returns JWT access token."
 			},
 			"response": []
 		},

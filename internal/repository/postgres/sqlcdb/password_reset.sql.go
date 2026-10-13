@@ -12,82 +12,146 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deletePasswordResetByUserID = `-- name: DeletePasswordResetByUserID :exec
-DELETE FROM password_resets WHERE user_id = $1
+const createPasswordResetToken = `-- name: CreatePasswordResetToken :one
+
+INSERT INTO identity_password_reset_tokens (
+    user_id,
+    token_hash,
+    expires_at
+)
+VALUES (
+    $1,
+    $2,
+    $3
+)
+RETURNING id, user_id, token_hash, expires_at, used_at, attempt_count, created_at
 `
 
-func (q *Queries) DeletePasswordResetByUserID(ctx context.Context, userID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deletePasswordResetByUserID, userID)
-	return err
-}
-
-const getPasswordResetByUserID = `-- name: GetPasswordResetByUserID :one
-SELECT id, user_id, otp_hash, attempts, expires_at, last_sent_at, created_at FROM password_resets WHERE user_id = $1
-`
-
-func (q *Queries) GetPasswordResetByUserID(ctx context.Context, userID uuid.UUID) (PasswordReset, error) {
-	row := q.db.QueryRow(ctx, getPasswordResetByUserID, userID)
-	var i PasswordReset
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.OtpHash,
-		&i.Attempts,
-		&i.ExpiresAt,
-		&i.LastSentAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const incrementPasswordResetAttempts = `-- name: IncrementPasswordResetAttempts :one
-UPDATE password_resets
-SET attempts = attempts + 1
-WHERE user_id = $1
-RETURNING attempts
-`
-
-func (q *Queries) IncrementPasswordResetAttempts(ctx context.Context, userID uuid.UUID) (int32, error) {
-	row := q.db.QueryRow(ctx, incrementPasswordResetAttempts, userID)
-	var attempts int32
-	err := row.Scan(&attempts)
-	return attempts, err
-}
-
-const upsertPasswordReset = `-- name: UpsertPasswordReset :one
-INSERT INTO password_resets (user_id, otp_hash, attempts, expires_at, last_sent_at)
-VALUES ($1, $2, $3, $4, now())
-ON CONFLICT (user_id) DO UPDATE
-SET otp_hash = EXCLUDED.otp_hash,
-    attempts = EXCLUDED.attempts,
-    expires_at = EXCLUDED.expires_at,
-    last_sent_at = now()
-RETURNING id, user_id, otp_hash, attempts, expires_at, last_sent_at, created_at
-`
-
-type UpsertPasswordResetParams struct {
+type CreatePasswordResetTokenParams struct {
 	UserID    uuid.UUID
-	OtpHash   string
-	Attempts  int32
+	TokenHash []byte
 	ExpiresAt pgtype.Timestamptz
 }
 
-func (q *Queries) UpsertPasswordReset(ctx context.Context, arg UpsertPasswordResetParams) (PasswordReset, error) {
-	row := q.db.QueryRow(ctx, upsertPasswordReset,
-		arg.UserID,
-		arg.OtpHash,
-		arg.Attempts,
-		arg.ExpiresAt,
-	)
-	var i PasswordReset
+// =========================================================
+// PASSWORD RESET TOKENS
+// =========================================================
+func (q *Queries) CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (IdentityPasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, createPasswordResetToken, arg.UserID, arg.TokenHash, arg.ExpiresAt)
+	var i IdentityPasswordResetToken
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
-		&i.OtpHash,
-		&i.Attempts,
+		&i.TokenHash,
 		&i.ExpiresAt,
-		&i.LastSentAt,
+		&i.UsedAt,
+		&i.AttemptCount,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const deletePasswordResetTokensByUserID = `-- name: DeletePasswordResetTokensByUserID :exec
+DELETE FROM identity_password_reset_tokens
+WHERE user_id = $1
+`
+
+func (q *Queries) DeletePasswordResetTokensByUserID(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deletePasswordResetTokensByUserID, userID)
+	return err
+}
+
+const getActivePasswordResetToken = `-- name: GetActivePasswordResetToken :one
+SELECT id, user_id, token_hash, expires_at, used_at, attempt_count, created_at
+FROM identity_password_reset_tokens
+WHERE user_id = $1
+  AND used_at IS NULL
+  AND expires_at > now()
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetActivePasswordResetToken(ctx context.Context, userID uuid.UUID) (IdentityPasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getActivePasswordResetToken, userID)
+	var i IdentityPasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.AttemptCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPasswordResetTokenByHash = `-- name: GetPasswordResetTokenByHash :one
+SELECT id, user_id, token_hash, expires_at, used_at, attempt_count, created_at
+FROM identity_password_reset_tokens
+WHERE token_hash = $1
+  AND used_at IS NULL
+  AND expires_at > now()
+`
+
+func (q *Queries) GetPasswordResetTokenByHash(ctx context.Context, tokenHash []byte) (IdentityPasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetTokenByHash, tokenHash)
+	var i IdentityPasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.AttemptCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPasswordResetTokenByUserID = `-- name: GetPasswordResetTokenByUserID :one
+SELECT id, user_id, token_hash, expires_at, used_at, attempt_count, created_at
+FROM identity_password_reset_tokens
+WHERE user_id = $1
+  AND used_at IS NULL
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetPasswordResetTokenByUserID(ctx context.Context, userID uuid.UUID) (IdentityPasswordResetToken, error) {
+	row := q.db.QueryRow(ctx, getPasswordResetTokenByUserID, userID)
+	var i IdentityPasswordResetToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.AttemptCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const incrementPasswordResetAttempts = `-- name: IncrementPasswordResetAttempts :exec
+UPDATE identity_password_reset_tokens
+SET attempt_count = attempt_count + 1
+WHERE id = $1
+`
+
+func (q *Queries) IncrementPasswordResetAttempts(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, incrementPasswordResetAttempts, id)
+	return err
+}
+
+const markPasswordResetTokenUsed = `-- name: MarkPasswordResetTokenUsed :exec
+UPDATE identity_password_reset_tokens
+SET used_at = now()
+WHERE id = $1
+  AND used_at IS NULL
+`
+
+func (q *Queries) MarkPasswordResetTokenUsed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markPasswordResetTokenUsed, id)
+	return err
 }

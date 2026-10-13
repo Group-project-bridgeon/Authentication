@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/group-project/authentication/internal/domain"
@@ -14,22 +15,24 @@ import (
 
 const uniqueViolation = "23505"
 
-// compile-time check: UserRepo must satisfy domain.UserRepository
 var _ domain.UserRepository = (*UserRepo)(nil)
 
 type UserRepo struct {
-	q *sqlcdb.Queries
+	q    *sqlcdb.Queries
+	pool *pgxpool.Pool
 }
 
 func NewUserRepo(pool *pgxpool.Pool) *UserRepo {
-	return &UserRepo{q: sqlcdb.New(pool)}
+	return &UserRepo{
+		q:    sqlcdb.New(pool),
+		pool: pool,
+	}
 }
 
 func (r *UserRepo) Create(ctx context.Context, u *domain.User) (*domain.User, error) {
 	row, err := r.q.CreateUser(ctx, sqlcdb.CreateUserParams{
-		Email:        u.Email,
-		Name:         u.Name,
-		PasswordHash: u.PasswordHash,
+		Email:    u.Email,
+		FullName: stringToPgText(u.FullName),
 	})
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -38,7 +41,8 @@ func (r *UserRepo) Create(ctx context.Context, u *domain.User) (*domain.User, er
 		}
 		return nil, err
 	}
-	return toDomain(row), nil
+
+	return toDomainUser(row), nil
 }
 
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
@@ -49,7 +53,8 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 		}
 		return nil, err
 	}
-	return toDomain(row), nil
+
+	return toDomainUser(row), nil
 }
 
 func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
@@ -60,27 +65,41 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, err
 		}
 		return nil, err
 	}
-	return toDomain(row), nil
+
+	return toDomainUser(row), nil
 }
 
-func (r *UserRepo) SetVerified(ctx context.Context, id uuid.UUID) error {
-	return r.q.SetUserVerified(ctx, id)
+func (r *UserRepo) SetEmailVerified(ctx context.Context, id uuid.UUID) error {
+	return r.q.MarkEmailVerified(ctx, id)
 }
 
-func (r *UserRepo) UpdatePassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
-	return r.q.UpdatePasswordHashAndVerify(ctx, sqlcdb.UpdatePasswordHashAndVerifyParams{
-		ID:           id,
-		PasswordHash: passwordHash,
-	})
+func (r *UserRepo) UpdateLastLogin(ctx context.Context, id uuid.UUID, loginAt time.Time) error {
+	_, err := r.pool.Exec(
+		ctx,
+		`UPDATE identity_users
+		 SET last_login_at = $2,
+		     updated_at = now()
+		 WHERE id = $1`,
+		id,
+		loginAt,
+	)
+	return err
 }
 
-func toDomain(r sqlcdb.User) *domain.User {
+func toDomainUser(r sqlcdb.IdentityUser) *domain.User {
 	return &domain.User{
-		ID:           r.ID,
-		Email:        r.Email,
-		Name:         r.Name,
-		PasswordHash: r.PasswordHash,
-		CreatedAt:    r.CreatedAt.Time,
-		IsVerified:   r.IsVerified,
+		ID:                 r.ID,
+		Email:              r.Email,
+		FullName:           pgTextToString(r.FullName),
+		IsActive:           r.IsActive,
+		MustChangePassword: r.MustChangePassword,
+		TokenVersion:       r.TokenVersion,
+		LastLoginAt:        pgTimestamptzToTime(r.LastLoginAt),
+		DeactivatedAt:      pgTimestamptzToTime(r.DeactivatedAt),
+		DeactivatedBy:      pgUUIDToUUID(r.DeactivatedBy),
+		CreatedBy:          pgUUIDToUUID(r.CreatedBy),
+		EmailVerifiedAt:    pgTimestamptzToTime(r.EmailVerifiedAt),
+		CreatedAt:          r.CreatedAt.Time,
+		UpdatedAt:          r.UpdatedAt.Time,
 	}
 }

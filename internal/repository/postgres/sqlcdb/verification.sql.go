@@ -12,82 +12,142 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteVerificationByUserID = `-- name: DeleteVerificationByUserID :exec
-DELETE FROM email_verifications WHERE user_id = $1
+const createEmailVerificationToken = `-- name: CreateEmailVerificationToken :one
+INSERT INTO identity_email_verification_tokens (
+    user_id,
+    token_hash,
+    expires_at
+)
+VALUES (
+    $1,
+    $2,
+    $3
+)
+RETURNING id, user_id, token_hash, expires_at, verified_at, attempt_count, created_at
 `
 
-func (q *Queries) DeleteVerificationByUserID(ctx context.Context, userID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteVerificationByUserID, userID)
-	return err
-}
-
-const getVerificationByUserID = `-- name: GetVerificationByUserID :one
-SELECT id, user_id, otp_hash, attempts, expires_at, last_sent_at, created_at FROM email_verifications WHERE user_id = $1
-`
-
-func (q *Queries) GetVerificationByUserID(ctx context.Context, userID uuid.UUID) (EmailVerification, error) {
-	row := q.db.QueryRow(ctx, getVerificationByUserID, userID)
-	var i EmailVerification
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.OtpHash,
-		&i.Attempts,
-		&i.ExpiresAt,
-		&i.LastSentAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const incrementVerificationAttempts = `-- name: IncrementVerificationAttempts :one
-UPDATE email_verifications
-SET attempts = attempts + 1
-WHERE user_id = $1
-RETURNING attempts
-`
-
-func (q *Queries) IncrementVerificationAttempts(ctx context.Context, userID uuid.UUID) (int32, error) {
-	row := q.db.QueryRow(ctx, incrementVerificationAttempts, userID)
-	var attempts int32
-	err := row.Scan(&attempts)
-	return attempts, err
-}
-
-const upsertVerification = `-- name: UpsertVerification :one
-INSERT INTO email_verifications (user_id, otp_hash, attempts, expires_at, last_sent_at)
-VALUES ($1, $2, $3, $4, now())
-ON CONFLICT (user_id) DO UPDATE
-SET otp_hash = EXCLUDED.otp_hash,
-    attempts = EXCLUDED.attempts,
-    expires_at = EXCLUDED.expires_at,
-    last_sent_at = now()
-RETURNING id, user_id, otp_hash, attempts, expires_at, last_sent_at, created_at
-`
-
-type UpsertVerificationParams struct {
+type CreateEmailVerificationTokenParams struct {
 	UserID    uuid.UUID
-	OtpHash   string
-	Attempts  int32
+	TokenHash []byte
 	ExpiresAt pgtype.Timestamptz
 }
 
-func (q *Queries) UpsertVerification(ctx context.Context, arg UpsertVerificationParams) (EmailVerification, error) {
-	row := q.db.QueryRow(ctx, upsertVerification,
-		arg.UserID,
-		arg.OtpHash,
-		arg.Attempts,
-		arg.ExpiresAt,
-	)
-	var i EmailVerification
+func (q *Queries) CreateEmailVerificationToken(ctx context.Context, arg CreateEmailVerificationTokenParams) (IdentityEmailVerificationToken, error) {
+	row := q.db.QueryRow(ctx, createEmailVerificationToken, arg.UserID, arg.TokenHash, arg.ExpiresAt)
+	var i IdentityEmailVerificationToken
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
-		&i.OtpHash,
-		&i.Attempts,
+		&i.TokenHash,
 		&i.ExpiresAt,
-		&i.LastSentAt,
+		&i.VerifiedAt,
+		&i.AttemptCount,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const deleteEmailVerificationTokensByUserID = `-- name: DeleteEmailVerificationTokensByUserID :exec
+DELETE FROM identity_email_verification_tokens
+WHERE user_id = $1
+`
+
+func (q *Queries) DeleteEmailVerificationTokensByUserID(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteEmailVerificationTokensByUserID, userID)
+	return err
+}
+
+const getActiveEmailVerificationToken = `-- name: GetActiveEmailVerificationToken :one
+SELECT id, user_id, token_hash, expires_at, verified_at, attempt_count, created_at
+FROM identity_email_verification_tokens
+WHERE user_id = $1
+  AND verified_at IS NULL
+  AND expires_at > now()
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetActiveEmailVerificationToken(ctx context.Context, userID uuid.UUID) (IdentityEmailVerificationToken, error) {
+	row := q.db.QueryRow(ctx, getActiveEmailVerificationToken, userID)
+	var i IdentityEmailVerificationToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.VerifiedAt,
+		&i.AttemptCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getEmailVerificationTokenByHash = `-- name: GetEmailVerificationTokenByHash :one
+SELECT id, user_id, token_hash, expires_at, verified_at, attempt_count, created_at
+FROM identity_email_verification_tokens
+WHERE token_hash = $1
+  AND verified_at IS NULL
+  AND expires_at > now()
+`
+
+func (q *Queries) GetEmailVerificationTokenByHash(ctx context.Context, tokenHash []byte) (IdentityEmailVerificationToken, error) {
+	row := q.db.QueryRow(ctx, getEmailVerificationTokenByHash, tokenHash)
+	var i IdentityEmailVerificationToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.VerifiedAt,
+		&i.AttemptCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getEmailVerificationTokenByUserID = `-- name: GetEmailVerificationTokenByUserID :one
+SELECT id, user_id, token_hash, expires_at, verified_at, attempt_count, created_at
+FROM identity_email_verification_tokens
+WHERE user_id = $1
+  AND verified_at IS NULL
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+func (q *Queries) GetEmailVerificationTokenByUserID(ctx context.Context, userID uuid.UUID) (IdentityEmailVerificationToken, error) {
+	row := q.db.QueryRow(ctx, getEmailVerificationTokenByUserID, userID)
+	var i IdentityEmailVerificationToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.VerifiedAt,
+		&i.AttemptCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const incrementEmailVerificationAttempts = `-- name: IncrementEmailVerificationAttempts :exec
+UPDATE identity_email_verification_tokens
+SET attempt_count = attempt_count + 1
+WHERE id = $1
+`
+
+func (q *Queries) IncrementEmailVerificationAttempts(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, incrementEmailVerificationAttempts, id)
+	return err
+}
+
+const markEmailVerificationTokenUsed = `-- name: MarkEmailVerificationTokenUsed :exec
+UPDATE identity_email_verification_tokens
+SET verified_at = now()
+WHERE id = $1
+  AND verified_at IS NULL
+`
+
+func (q *Queries) MarkEmailVerificationTokenUsed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markEmailVerificationTokenUsed, id)
+	return err
 }

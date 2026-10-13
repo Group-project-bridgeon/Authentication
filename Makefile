@@ -15,9 +15,9 @@ docker-down:
 	docker compose down
 
 migrate-up:
-	docker compose exec -T postgres psql -U postgres -d auth < db/migrations/000001_create_users.up.sql
-	docker compose exec -T postgres psql -U postgres -d auth < db/migrations/000002_add_email_verification.up.sql
-	docker compose exec -T postgres psql -U postgres -d auth < db/migrations/000003_create_password_resets.up.sql
-
+	for f in $$(ls db/migrations/*.up.sql | sort); do \
+		echo "Applying $$f..."; \
+		docker compose exec -T postgres psql -U postgres -d auth < $$f || exit 1; \
+	done
 test:
 	go test -v ./...

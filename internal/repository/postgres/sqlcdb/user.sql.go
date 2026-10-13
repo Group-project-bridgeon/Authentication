@@ -9,96 +9,291 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const createCredentials = `-- name: CreateCredentials :one
+
+INSERT INTO identity_credentials (
+    user_id,
+    password_hash,
+    password_changed_at
+)
+VALUES (
+    $1,
+    $2,
+    now()
+)
+RETURNING id, user_id, password_hash, password_changed_at, failed_login_count, locked_until, created_at, updated_at
+`
+
+type CreateCredentialsParams struct {
+	UserID       uuid.UUID
+	PasswordHash pgtype.Text
+}
+
+// =========================================================
+// CREDENTIALS
+// =========================================================
+func (q *Queries) CreateCredentials(ctx context.Context, arg CreateCredentialsParams) (IdentityCredential, error) {
+	row := q.db.QueryRow(ctx, createCredentials, arg.UserID, arg.PasswordHash)
+	var i IdentityCredential
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.PasswordHash,
+		&i.PasswordChangedAt,
+		&i.FailedLoginCount,
+		&i.LockedUntil,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createExternalIdentity = `-- name: CreateExternalIdentity :one
+
+INSERT INTO identity_external_identities (
+    user_id,
+    provider,
+    provider_subject,
+    email_at_link
+)
+VALUES (
+    $1,
+    $2,
+    $3,
+    $4
+)
+RETURNING id, user_id, provider, provider_subject, email_at_link, linked_at, last_login_at
+`
+
+type CreateExternalIdentityParams struct {
+	UserID          uuid.UUID
+	Provider        string
+	ProviderSubject string
+	EmailAtLink     pgtype.Text
+}
+
+// =========================================================
+// EXTERNAL IDENTITIES / OAUTH
+// =========================================================
+func (q *Queries) CreateExternalIdentity(ctx context.Context, arg CreateExternalIdentityParams) (IdentityExternalIdentity, error) {
+	row := q.db.QueryRow(ctx, createExternalIdentity,
+		arg.UserID,
+		arg.Provider,
+		arg.ProviderSubject,
+		arg.EmailAtLink,
+	)
+	var i IdentityExternalIdentity
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Provider,
+		&i.ProviderSubject,
+		&i.EmailAtLink,
+		&i.LinkedAt,
+		&i.LastLoginAt,
+	)
+	return i, err
+}
+
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (email, name, password_hash)
-VALUES ($1, $2, $3)
-RETURNING id, email, name, password_hash, created_at, updated_at, is_verified
+
+INSERT INTO identity_users (
+    email,
+    full_name
+)
+VALUES (
+    $1,
+    $2
+)
+RETURNING id, email, full_name, is_active, must_change_password, token_version, email_verified_at, last_login_at, deactivated_at, deactivated_by, created_by, created_at, updated_at
 `
 
 type CreateUserParams struct {
-	Email        string
-	Name         string
-	PasswordHash string
+	Email    string
+	FullName pgtype.Text
 }
 
-func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
-	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.Name, arg.PasswordHash)
-	var i User
+// =========================================================
+// USERS
+// =========================================================
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (IdentityUser, error) {
+	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.FullName)
+	var i IdentityUser
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
-		&i.PasswordHash,
+		&i.FullName,
+		&i.IsActive,
+		&i.MustChangePassword,
+		&i.TokenVersion,
+		&i.EmailVerifiedAt,
+		&i.LastLoginAt,
+		&i.DeactivatedAt,
+		&i.DeactivatedBy,
+		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsVerified,
+	)
+	return i, err
+}
+
+const getCredentialsByUserID = `-- name: GetCredentialsByUserID :one
+SELECT id, user_id, password_hash, password_changed_at, failed_login_count, locked_until, created_at, updated_at
+FROM identity_credentials
+WHERE user_id = $1
+`
+
+func (q *Queries) GetCredentialsByUserID(ctx context.Context, userID uuid.UUID) (IdentityCredential, error) {
+	row := q.db.QueryRow(ctx, getCredentialsByUserID, userID)
+	var i IdentityCredential
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.PasswordHash,
+		&i.PasswordChangedAt,
+		&i.FailedLoginCount,
+		&i.LockedUntil,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, name, password_hash, created_at, updated_at, is_verified FROM users WHERE email = $1
+SELECT id, email, full_name, is_active, must_change_password, token_version, email_verified_at, last_login_at, deactivated_at, deactivated_by, created_by, created_at, updated_at
+FROM identity_users
+WHERE email = $1
 `
 
-func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (IdentityUser, error) {
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
-	var i User
+	var i IdentityUser
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
-		&i.PasswordHash,
+		&i.FullName,
+		&i.IsActive,
+		&i.MustChangePassword,
+		&i.TokenVersion,
+		&i.EmailVerifiedAt,
+		&i.LastLoginAt,
+		&i.DeactivatedAt,
+		&i.DeactivatedBy,
+		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsVerified,
+	)
+	return i, err
+}
+
+const getUserByExternalIdentity = `-- name: GetUserByExternalIdentity :one
+SELECT u.id, u.email, u.full_name, u.is_active, u.must_change_password, u.token_version, u.email_verified_at, u.last_login_at, u.deactivated_at, u.deactivated_by, u.created_by, u.created_at, u.updated_at
+FROM identity_users AS u
+INNER JOIN identity_external_identities AS e
+    ON e.user_id = u.id
+WHERE e.provider = $1
+  AND e.provider_subject = $2
+`
+
+type GetUserByExternalIdentityParams struct {
+	Provider        string
+	ProviderSubject string
+}
+
+func (q *Queries) GetUserByExternalIdentity(ctx context.Context, arg GetUserByExternalIdentityParams) (IdentityUser, error) {
+	row := q.db.QueryRow(ctx, getUserByExternalIdentity, arg.Provider, arg.ProviderSubject)
+	var i IdentityUser
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.FullName,
+		&i.IsActive,
+		&i.MustChangePassword,
+		&i.TokenVersion,
+		&i.EmailVerifiedAt,
+		&i.LastLoginAt,
+		&i.DeactivatedAt,
+		&i.DeactivatedBy,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, name, password_hash, created_at, updated_at, is_verified FROM users WHERE id = $1
+SELECT id, email, full_name, is_active, must_change_password, token_version, email_verified_at, last_login_at, deactivated_at, deactivated_by, created_by, created_at, updated_at
+FROM identity_users
+WHERE id = $1
 `
 
-func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (IdentityUser, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
-	var i User
+	var i IdentityUser
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
-		&i.Name,
-		&i.PasswordHash,
+		&i.FullName,
+		&i.IsActive,
+		&i.MustChangePassword,
+		&i.TokenVersion,
+		&i.EmailVerifiedAt,
+		&i.LastLoginAt,
+		&i.DeactivatedAt,
+		&i.DeactivatedBy,
+		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.IsVerified,
 	)
 	return i, err
 }
 
-const setUserVerified = `-- name: SetUserVerified :exec
-UPDATE users
-SET is_verified = TRUE, updated_at = now()
+const markEmailVerified = `-- name: MarkEmailVerified :exec
+UPDATE identity_users
+SET email_verified_at = now(),
+    updated_at = now()
 WHERE id = $1
 `
 
-func (q *Queries) SetUserVerified(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, setUserVerified, id)
+func (q *Queries) MarkEmailVerified(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markEmailVerified, id)
 	return err
 }
 
-const updatePasswordHashAndVerify = `-- name: UpdatePasswordHashAndVerify :exec
-UPDATE users
-SET password_hash = $2, is_verified = TRUE, updated_at = now()
-WHERE id = $1
+const updatePassword = `-- name: UpdatePassword :exec
+INSERT INTO identity_credentials (
+    user_id,
+    password_hash,
+    password_changed_at,
+    failed_login_count,
+    locked_until,
+    updated_at
+)
+VALUES (
+    $1,
+    $2,
+    now(),
+    0,
+    NULL,
+    now()
+)
+ON CONFLICT (user_id) DO UPDATE
+SET password_hash = EXCLUDED.password_hash,
+    password_changed_at = now(),
+    failed_login_count = 0,
+    locked_until = NULL,
+    updated_at = now()
 `
 
-type UpdatePasswordHashAndVerifyParams struct {
-	ID           uuid.UUID
-	PasswordHash string
+type UpdatePasswordParams struct {
+	UserID       uuid.UUID
+	PasswordHash pgtype.Text
 }
 
-func (q *Queries) UpdatePasswordHashAndVerify(ctx context.Context, arg UpdatePasswordHashAndVerifyParams) error {
-	_, err := q.db.Exec(ctx, updatePasswordHashAndVerify, arg.ID, arg.PasswordHash)
+func (q *Queries) UpdatePassword(ctx context.Context, arg UpdatePasswordParams) error {
+	_, err := q.db.Exec(ctx, updatePassword, arg.UserID, arg.PasswordHash)
 	return err
 }

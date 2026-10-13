@@ -1,21 +1,51 @@
--- name: UpsertVerification :one
-INSERT INTO email_verifications (user_id, otp_hash, attempts, expires_at, last_sent_at)
-VALUES ($1, $2, $3, $4, now())
-ON CONFLICT (user_id) DO UPDATE
-SET otp_hash = EXCLUDED.otp_hash,
-    attempts = EXCLUDED.attempts,
-    expires_at = EXCLUDED.expires_at,
-    last_sent_at = now()
+-- name: CreateEmailVerificationToken :one
+INSERT INTO identity_email_verification_tokens (
+    user_id,
+    token_hash,
+    expires_at
+)
+VALUES (
+    $1,
+    $2,
+    $3
+)
 RETURNING *;
 
--- name: GetVerificationByUserID :one
-SELECT * FROM email_verifications WHERE user_id = $1;
-
--- name: IncrementVerificationAttempts :one
-UPDATE email_verifications
-SET attempts = attempts + 1
+-- name: GetEmailVerificationTokenByUserID :one
+SELECT *
+FROM identity_email_verification_tokens
 WHERE user_id = $1
-RETURNING attempts;
+  AND verified_at IS NULL
+ORDER BY created_at DESC
+LIMIT 1;
 
--- name: DeleteVerificationByUserID :exec
-DELETE FROM email_verifications WHERE user_id = $1;
+-- name: GetActiveEmailVerificationToken :one
+SELECT *
+FROM identity_email_verification_tokens
+WHERE user_id = $1
+  AND verified_at IS NULL
+  AND expires_at > now()
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetEmailVerificationTokenByHash :one
+SELECT *
+FROM identity_email_verification_tokens
+WHERE token_hash = $1
+  AND verified_at IS NULL
+  AND expires_at > now();
+
+-- name: IncrementEmailVerificationAttempts :exec
+UPDATE identity_email_verification_tokens
+SET attempt_count = attempt_count + 1
+WHERE id = $1;
+
+-- name: MarkEmailVerificationTokenUsed :exec
+UPDATE identity_email_verification_tokens
+SET verified_at = now()
+WHERE id = $1
+  AND verified_at IS NULL;
+
+-- name: DeleteEmailVerificationTokensByUserID :exec
+DELETE FROM identity_email_verification_tokens
+WHERE user_id = $1;

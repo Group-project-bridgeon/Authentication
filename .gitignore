@@ -1,2 +1,3 @@
 #enviornmental variables
 .env
+bin/

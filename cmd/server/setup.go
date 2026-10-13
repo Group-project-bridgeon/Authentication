@@ -38,24 +38,40 @@ func run() error {
 
 	jwtManager := helper.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiry)
 	emailSender := helper.NewEmailSender(cfg.SMTP)
+	googleOAuth := helper.NewGoogleOAuthProvider(cfg.GoogleOAuth)
+	if googleOAuth.IsConfigured() {
+		slog.Info("Google OAuth 2.0 initialized successfully")
+	} else {
+		slog.Info("Google OAuth 2.0 credentials not configured in .env (OAuth endpoints disabled)")
+	}
+
 	usrRepo := postgres.NewUserRepo(pool)
+	credentialRepo := postgres.NewCredentialRepo(pool)
+	externalIdentityRepo := postgres.NewExternalIdentityRepo(pool)
 	verificationRepo := postgres.NewVerificationRepo(pool)
 	passwordResetRepo := postgres.NewPasswordResetRepo(pool)
 
 	authSvc := service.NewAuthService(
 		usrRepo,
+		credentialRepo,
+		externalIdentityRepo,
 		verificationRepo,
 		passwordResetRepo,
 		helper.NewBcrypt(),
 		jwtManager,
 		emailSender,
+		googleOAuth,
 	)
+
 	authHandler := handler.NewAuthHandler(authSvc)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router.NewRouter(authHandler, jwtManager).Router(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

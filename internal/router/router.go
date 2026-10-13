@@ -40,6 +40,10 @@ func (s *Route) Router() *gin.Engine {
 		api.POST("/forgot-password", s.authHandler.ForgotPassword)
 		api.POST("/reset-password", s.authHandler.ResetPassword)
 
+		// Google OAuth endpoints
+		api.GET("/google/login", s.authHandler.GoogleLogin)
+		api.GET("/google/callback", s.authHandler.GoogleCallback)
+
 		// Dedicated JWT protected routes
 		protected := api.Group("")
 		protected.Use(middleware.JWTAuth(s.jwtManager))
