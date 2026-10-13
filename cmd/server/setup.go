@@ -69,7 +69,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           router.NewRouter(authHandler, jwtManager, authSvc).Router(),
+		Handler:           router.NewRouter(authHandler, jwtManager, authSvc, pool).Router(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
