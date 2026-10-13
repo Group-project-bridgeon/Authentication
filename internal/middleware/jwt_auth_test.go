@@ -230,3 +230,22 @@ func TestJWTAuth_MissingUser(t *testing.T) {
 		t.Fatalf("expected 401 Unauthorized for missing user, got %d", w.Code)
 	}
 }
+
+func TestJWTAuth_ValidTokenWithoutUserProvider_FailsClosed(t *testing.T) {
+	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", time.Hour)
+	userID := uuid.New()
+	token, err := jwtMgr.GenerateVersioned(userID, "failclosed@example.com", 0)
+	if err != nil {
+		t.Fatalf("unexpected token generation error: %v", err)
+	}
+
+	r := setupTestRouter(jwtMgr, nil)
+	req, _ := http.NewRequest(http.MethodGet, "/test-protected", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when user provider is unavailable, got %d: %s", w.Code, w.Body.String())
+	}
+}

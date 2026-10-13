@@ -62,14 +62,19 @@ func JWTAuth(jwtManager *helper.JWTManager, userProvider TokenUserProvider) gin.
 			return
 		}
 
-		if userProvider != nil {
-			user, err := userProvider.GetUserByID(c.Request.Context(), claims.UserID)
-			if err != nil || user == nil || !user.IsActive || user.TokenVersion != claims.TokenVersion {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-					"error": "invalid or revoked token",
-				})
-				return
-			}
+		if userProvider == nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid or revoked token",
+			})
+			return
+		}
+
+		user, err := userProvider.GetUserByID(c.Request.Context(), claims.UserID)
+		if err != nil || user == nil || !user.IsActive || user.TokenVersion != claims.TokenVersion {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid or revoked token",
+			})
+			return
 		}
 
 		// Store user identity in the request context for subsequent handlers

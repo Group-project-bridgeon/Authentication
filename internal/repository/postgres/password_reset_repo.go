@@ -15,12 +15,14 @@ import (
 var _ domain.PasswordResetRepository = (*PasswordResetRepo)(nil)
 
 type PasswordResetRepo struct {
-	q *sqlcdb.Queries
+	q  *sqlcdb.Queries
+	db sqlcdb.DBTX
 }
 
 func newPasswordResetRepo(db sqlcdb.DBTX) *PasswordResetRepo {
 	return &PasswordResetRepo{
-		q: sqlcdb.New(db),
+		q:  sqlcdb.New(db),
+		db: db,
 	}
 }
 
@@ -106,7 +108,24 @@ func (r *PasswordResetRepo) MarkUsed(
 	ctx context.Context,
 	id uuid.UUID,
 ) error {
-	return r.q.MarkPasswordResetTokenUsed(ctx, id)
+	result, err := r.db.Exec(
+		ctx,
+		`UPDATE identity_password_reset_tokens
+		 SET used_at = now()
+		 WHERE id = $1
+		   AND used_at IS NULL
+		   AND expires_at > now()`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+
+	if result.RowsAffected() != 1 {
+		return domain.ErrInvalidOTP
+	}
+
+	return nil
 }
 
 func (r *PasswordResetRepo) DeleteByUserID(

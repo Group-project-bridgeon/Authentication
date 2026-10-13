@@ -184,10 +184,6 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 		Email: req.Email,
 	})
 	if err != nil {
-		if errors.Is(err, domain.ErrOTPCooldown) {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "please wait 60 seconds before requesting another reset code"})
-			return
-		}
 		slog.Error("forgot password failed", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 		return
@@ -321,6 +317,10 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 		}
 		if errors.Is(err, domain.ErrOAuthNotConfigured) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "google oauth is not configured on this server"})
+			return
+		}
+		if errors.Is(err, domain.ErrOAuthEmailNotVerified) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "google account email is not verified"})
 			return
 		}
 		slog.Error("google oauth callback failed", "err", err)

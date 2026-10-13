@@ -393,7 +393,8 @@ func (s *AuthService) ForgotPassword(
 
 	latest, err := s.passwordResets.GetLatestByUserID(ctx, user.ID)
 	if err == nil && latest != nil && time.Since(latest.CreatedAt) < OTPCooldownDuration {
-		return domain.ErrOTPCooldown
+		// Keep the public behavior indistinguishable from a nonexistent account.
+		return nil
 	}
 
 	otp, err := helper.GenerateOTP()
@@ -497,17 +498,24 @@ func (s *AuthService) ResetPassword(
 	}
 
 	txFn := func(uow domain.AuthUnitOfWork) error {
+		// Atomically claim the reset token before changing credentials.
+		// A concurrent/replayed request will fail this conditional update.
+		if err := uow.PasswordResets().MarkUsed(ctx, token.ID); err != nil {
+			return err
+		}
 		if err := uow.Credentials().UpdatePassword(ctx, user.ID, hash); err != nil {
 			return err
 		}
-		if _, err := uow.Users().IncrementTokenVersion(ctx, user.ID); err != nil {
-			return err
-		}
-		return uow.PasswordResets().MarkUsed(ctx, token.ID)
+		_, err := uow.Users().IncrementTokenVersion(ctx, user.ID)
+		return err
 	}
 
 	if s.txManager != nil {
 		return s.txManager.WithinTransaction(ctx, txFn)
+	}
+
+	if err := s.passwordResets.MarkUsed(ctx, token.ID); err != nil {
+		return err
 	}
 
 	if err := s.credentials.UpdatePassword(ctx, user.ID, hash); err != nil {
@@ -515,10 +523,6 @@ func (s *AuthService) ResetPassword(
 	}
 
 	if _, err := s.users.IncrementTokenVersion(ctx, user.ID); err != nil {
-		return err
-	}
-
-	if err := s.passwordResets.MarkUsed(ctx, token.ID); err != nil {
 		return err
 	}
 
@@ -544,7 +548,7 @@ func (s *AuthService) GoogleCallback(
 	ctx context.Context,
 	in dto.GoogleCallbackInput,
 ) (*dto.AuthResult, error) {
-	if !s.oauth.IsConfigured() {
+	if s.oauth == nil || !s.oauth.IsConfigured() {
 		return nil, domain.ErrOAuthNotConfigured
 	}
 
@@ -565,6 +569,9 @@ func (s *AuthService) GoogleCallback(
 	if email == "" || oauthUser.ID == "" {
 		return nil, domain.ErrInvalidInput
 	}
+	if !oauthUser.VerifiedEmail {
+		return nil, domain.ErrOAuthEmailNotVerified
+	}
 
 	// First try to find an existing user through the external identity.
 	userID, err := s.externalIdentity.GetUserID(
@@ -572,6 +579,9 @@ func (s *AuthService) GoogleCallback(
 		"google",
 		oauthUser.ID,
 	)
+	if err != nil && !errors.Is(err, domain.ErrUserNotFound) {
+		return nil, err
+	}
 	if err == nil {
 		user, err := s.users.GetByID(ctx, userID)
 		if err != nil {
@@ -636,10 +646,11 @@ func (s *AuthService) GoogleCallback(
 			}
 		} else {
 			if oauthUser.VerifiedEmail && user.EmailVerifiedAt == nil {
-				if err := s.users.SetEmailVerified(ctx, user.ID); err == nil {
-					now := time.Now()
-					user.EmailVerifiedAt = &now
+				if err := s.users.SetEmailVerified(ctx, user.ID); err != nil {
+					return nil, err
 				}
+				now := time.Now()
+				user.EmailVerifiedAt = &now
 			}
 
 			_, err = s.externalIdentity.Create(

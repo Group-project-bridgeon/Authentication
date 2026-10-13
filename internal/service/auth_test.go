@@ -13,7 +13,8 @@ import (
 )
 
 type mockUserRepo struct {
-	users map[string]*domain.User
+	users               map[string]*domain.User
+	setEmailVerifiedErr error
 }
 
 func newMockUserRepo() *mockUserRepo {
@@ -59,6 +60,9 @@ func (m *mockUserRepo) GetByID(_ context.Context, id uuid.UUID) (*domain.User, e
 }
 
 func (m *mockUserRepo) SetEmailVerified(_ context.Context, id uuid.UUID) error {
+	if m.setEmailVerifiedErr != nil {
+		return m.setEmailVerifiedErr
+	}
 	for _, u := range m.users {
 		if u.ID == id {
 			now := time.Now()
@@ -150,7 +154,8 @@ func (m *mockCredentialRepo) UpdatePassword(
 }
 
 type mockExternalIdentityRepo struct {
-	identities map[string]*domain.ExternalIdentity
+	identities   map[string]*domain.ExternalIdentity
+	getUserIDErr error
 }
 
 func newMockExternalIdentityRepo() *mockExternalIdentityRepo {
@@ -192,6 +197,9 @@ func (m *mockExternalIdentityRepo) GetUserID(
 	provider string,
 	providerSubject string,
 ) (uuid.UUID, error) {
+	if m.getUserIDErr != nil {
+		return uuid.Nil, m.getUserIDErr
+	}
 	record, exists := m.identities[externalIdentityKey(provider, providerSubject)]
 	if !exists {
 		return uuid.Nil, domain.ErrUserNotFound
@@ -425,7 +433,7 @@ func (m *mockPasswordResetRepo) MarkUsed(
 	id uuid.UUID,
 ) error {
 	token, exists := m.resets[id]
-	if !exists {
+	if !exists || token.UsedAt != nil || !time.Now().Before(token.ExpiresAt) {
 		return domain.ErrInvalidOTP
 	}
 
@@ -1433,5 +1441,319 @@ func TestAuthService_Register_TransactionRollbackOnFailure(t *testing.T) {
 
 	if emailSender.lastOTP != "" {
 		t.Errorf("expected no email dispatched on transaction failure, got %s", emailSender.lastOTP)
+	}
+}
+
+func TestAuthService_ForgotPassword_CooldownIsMasked(t *testing.T) {
+	svc, userRepo, _, _, _, resetRepo, _ := setupTestAuthService()
+
+	uid := uuid.New()
+	userRepo.users["cooldown-reset@example.com"] = &domain.User{
+		ID:       uid,
+		Email:    "cooldown-reset@example.com",
+		FullName: "Cooldown Reset",
+		IsActive: true,
+	}
+
+	resetID := uuid.New()
+	resetRepo.resets[resetID] = &domain.PasswordResetToken{
+		ID:        resetID,
+		UserID:    uid,
+		TokenHash: []byte(helper.HashOTP("123456")),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+		CreatedAt: time.Now(),
+	}
+
+	err := svc.ForgotPassword(context.Background(), dto.ForgotPasswordInput{
+		Email: "cooldown-reset@example.com",
+	})
+	if err != nil {
+		t.Fatalf("expected cooldown to be masked with nil, got: %v", err)
+	}
+}
+
+func TestAuthService_GoogleCallback_RejectsUnverifiedGoogleEmail(t *testing.T) {
+	svc, users, _, externalRepo, _, _, _, oauthProvider :=
+		setupTestAuthServiceWithOAuth()
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-unverified-1",
+		Email:         "unverified-google@example.com",
+		VerifiedEmail: false,
+		Name:          "Unverified Google User",
+	}
+
+	state := "secure-state"
+	_, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if !errors.Is(err, domain.ErrOAuthEmailNotVerified) {
+		t.Fatalf("expected ErrOAuthEmailNotVerified, got: %v", err)
+	}
+
+	if _, err := users.GetByEmail(context.Background(), "unverified-google@example.com"); !errors.Is(err, domain.ErrUserNotFound) {
+		t.Fatalf("unverified Google email must not create a user, got: %v", err)
+	}
+
+	if _, err := externalRepo.GetUserID(context.Background(), "google", "google-unverified-1"); !errors.Is(err, domain.ErrUserNotFound) {
+		t.Fatalf("unverified Google email must not create an external identity, got: %v", err)
+	}
+}
+
+func TestAuthService_GoogleCallback_UnverifiedEmailDoesNotLinkExistingAccount(t *testing.T) {
+	svc, users, _, externalRepo, _, _, _, oauthProvider :=
+		setupTestAuthServiceWithOAuth()
+
+	existing, err := users.Create(context.Background(), &domain.User{
+		Email:    "existing-unverified@example.com",
+		FullName: "Existing User",
+	})
+	if err != nil {
+		t.Fatalf("failed to create existing user: %v", err)
+	}
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-unverified-existing",
+		Email:         existing.Email,
+		VerifiedEmail: false,
+		Name:          "Existing User",
+	}
+
+	state := "secure-state-existing"
+	_, err = svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if !errors.Is(err, domain.ErrOAuthEmailNotVerified) {
+		t.Fatalf("expected ErrOAuthEmailNotVerified, got: %v", err)
+	}
+
+	if _, err := externalRepo.GetUserID(context.Background(), "google", "google-unverified-existing"); !errors.Is(err, domain.ErrUserNotFound) {
+		t.Fatalf("unverified Google email must not be linked, got: %v", err)
+	}
+}
+
+func TestAuthService_ResetPassword_RejectsReplayedToken(t *testing.T) {
+	svc, userRepo, credRepo, _, _, resetRepo, _ := setupTestAuthService()
+
+	uid := uuid.New()
+	userRepo.users["replay@example.com"] = &domain.User{
+		ID:           uid,
+		Email:        "replay@example.com",
+		FullName:     "Replay User",
+		IsActive:     true,
+		TokenVersion: 0,
+	}
+	oldHash := "old-hash"
+	credRepo.credentials[uid] = &domain.Credential{UserID: uid, PasswordHash: &oldHash}
+
+	otp := "654321"
+	resetID := uuid.New()
+	resetRepo.resets[resetID] = &domain.PasswordResetToken{
+		ID:        resetID,
+		UserID:    uid,
+		TokenHash: []byte(helper.HashOTP(otp)),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+		CreatedAt: time.Now(),
+	}
+
+	first := dto.ResetPasswordInput{
+		Email:       "replay@example.com",
+		OTP:         otp,
+		NewPassword: "FirstNewPassword123!",
+	}
+	if err := svc.ResetPassword(context.Background(), first); err != nil {
+		t.Fatalf("first reset failed: %v", err)
+	}
+
+	second := dto.ResetPasswordInput{
+		Email:       "replay@example.com",
+		OTP:         otp,
+		NewPassword: "SecondNewPassword123!",
+	}
+	if err := svc.ResetPassword(context.Background(), second); !errors.Is(err, domain.ErrInvalidOTP) {
+		t.Fatalf("expected replayed token to fail with ErrInvalidOTP, got: %v", err)
+	}
+
+	if userRepo.users["replay@example.com"].TokenVersion != 1 {
+		t.Fatalf("replayed token must not increment token version again")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Section 2: nil OAuth provider must not panic
+// ---------------------------------------------------------------------------
+
+func TestAuthService_GoogleCallback_NilOAuthProvider_DoesNotPanic(t *testing.T) {
+	userRepo := newMockUserRepo()
+	credentialRepo := newMockCredentialRepo()
+	externalIdentityRepo := newMockExternalIdentityRepo()
+	verificationRepo := newMockVerificationRepo()
+	resetRepo := newMockPasswordResetRepo()
+	emailSender := &mockEmailSender{}
+
+	hasher := helper.NewBcrypt()
+	jwtMgr := helper.NewJWTManager("test-jwt-secret-at-least-32-bytes-long", time.Hour)
+
+	txManager := &mockTransactionManager{
+		uow: &mockAuthUnitOfWork{
+			users:          userRepo,
+			credentials:    credentialRepo,
+			verifications:  verificationRepo,
+			passwordResets: resetRepo,
+			external:       externalIdentityRepo,
+		},
+	}
+
+	// Pass nil explicitly as the OAuthProvider.
+	svc := NewAuthService(
+		userRepo,
+		credentialRepo,
+		externalIdentityRepo,
+		verificationRepo,
+		resetRepo,
+		txManager,
+		hasher,
+		jwtMgr,
+		emailSender,
+		nil, // nil oauth provider
+	)
+
+	state := "some-state"
+	_, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if !errors.Is(err, domain.ErrOAuthNotConfigured) {
+		t.Fatalf("expected ErrOAuthNotConfigured with nil oauth, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Section 3: external identity DB error must propagate immediately
+// ---------------------------------------------------------------------------
+
+func TestAuthService_GoogleCallback_ExternalIdentityDBError_PropagatesImmediately(t *testing.T) {
+	svc, userRepo, _, externalRepo, _, _, _, oauthProvider :=
+		setupTestAuthServiceWithOAuth()
+
+	dbErr := errors.New("connection reset by peer")
+	externalRepo.getUserIDErr = dbErr
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-db-error",
+		Email:         "db-error@example.com",
+		VerifiedEmail: true,
+		Name:          "DB Error User",
+	}
+
+	state := "state-db-error"
+	res, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+
+	if !errors.Is(err, dbErr) {
+		t.Fatalf("expected db error to propagate, got: %v", err)
+	}
+	if res != nil {
+		t.Fatal("expected nil AuthResult on DB error")
+	}
+
+	// Must NOT have created a user.
+	if _, lookupErr := userRepo.GetByEmail(context.Background(), "db-error@example.com"); !errors.Is(lookupErr, domain.ErrUserNotFound) {
+		t.Fatal("GoogleCallback must not create a user when external identity lookup fails with DB error")
+	}
+
+	// Must NOT have linked an external identity (clear the error so we can look up).
+	externalRepo.getUserIDErr = nil
+	if _, lookupErr := externalRepo.GetUserID(context.Background(), "google", "google-db-error"); !errors.Is(lookupErr, domain.ErrUserNotFound) {
+		t.Fatal("GoogleCallback must not link an external identity when DB error occurs")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Section 4: SetEmailVerified error in fallback path must not be swallowed
+// ---------------------------------------------------------------------------
+
+func TestAuthService_GoogleCallback_SetEmailVerifiedError_InFallbackPath(t *testing.T) {
+	userRepo := newMockUserRepo()
+	credentialRepo := newMockCredentialRepo()
+	externalIdentityRepo := newMockExternalIdentityRepo()
+	verificationRepo := newMockVerificationRepo()
+	resetRepo := newMockPasswordResetRepo()
+	emailSender := &mockEmailSender{}
+
+	hasher := helper.NewBcrypt()
+	jwtMgr := helper.NewJWTManager("test-jwt-secret-at-least-32-bytes-long", time.Hour)
+
+	oauthProvider := &mockOAuthProvider{
+		authURL: "https://accounts.google.com/o/oauth2/auth",
+		oauthUser: &helper.OAuthUser{
+			ID:            "google-set-email-err",
+			Email:         "set-email-err@example.com",
+			VerifiedEmail: true,
+			Name:          "SetEmail Error User",
+		},
+		configured: true,
+	}
+
+	// No txManager → forces the non-transaction fallback path.
+	svc := NewAuthService(
+		userRepo,
+		credentialRepo,
+		externalIdentityRepo,
+		verificationRepo,
+		resetRepo,
+		nil, // no txManager → fallback path
+		hasher,
+		jwtMgr,
+		emailSender,
+		oauthProvider,
+	)
+
+	// Pre-create the local account without email verification.
+	existing, err := userRepo.Create(context.Background(), &domain.User{
+		Email:    "set-email-err@example.com",
+		FullName: "SetEmail Error User",
+	})
+	if err != nil {
+		t.Fatalf("setup: create user: %v", err)
+	}
+	// EmailVerifiedAt is nil so the code will call SetEmailVerified.
+
+	// Inject the error that SetEmailVerified should return.
+	setEmailErr := errors.New("disk write failure")
+	userRepo.setEmailVerifiedErr = setEmailErr
+
+	state := "state-set-email-err"
+	res, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+
+	if !errors.Is(err, setEmailErr) {
+		t.Fatalf("expected SetEmailVerified error to propagate, got: %v", err)
+	}
+	if res != nil {
+		t.Fatal("expected nil AuthResult when SetEmailVerified fails")
+	}
+
+	// External identity must NOT have been linked.
+	if _, lookupErr := externalIdentityRepo.GetUserID(
+		context.Background(), "google", "google-set-email-err",
+	); !errors.Is(lookupErr, domain.ErrUserNotFound) {
+		t.Fatal("external identity must not be linked when SetEmailVerified fails")
+	}
+
+	// Verify the user was not marked as email-verified (error was injected before that).
+	if existing.EmailVerifiedAt != nil {
+		t.Fatal("user.EmailVerifiedAt must remain nil when SetEmailVerified fails")
 	}
 }
