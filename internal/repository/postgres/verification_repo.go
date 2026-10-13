@@ -12,64 +12,120 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// compile-time check: VerificationRepo must satisfy domain.VerificationRepository
-var _ domain.VerificationRepository = (*VerificationRepo)(nil)
+var _ domain.EmailVerificationRepository = (*VerificationRepo)(nil)
 
 type VerificationRepo struct {
 	q *sqlcdb.Queries
 }
 
-func NewVerificationRepo(pool *pgxpool.Pool) *VerificationRepo {
-	return &VerificationRepo{q: sqlcdb.New(pool)}
+func newVerificationRepo(db sqlcdb.DBTX) *VerificationRepo {
+	return &VerificationRepo{
+		q: sqlcdb.New(db),
+	}
 }
 
-func (r *VerificationRepo) Upsert(ctx context.Context, v *domain.EmailVerification) (*domain.EmailVerification, error) {
-	row, err := r.q.UpsertVerification(ctx, sqlcdb.UpsertVerificationParams{
-		UserID:  v.UserID,
-		OtpHash: v.OtpHash,
-		Attempts: int32(v.Attempts),
-		ExpiresAt: pgtype.Timestamptz{
-			Time:  v.ExpiresAt,
-			Valid: true,
+func NewVerificationRepo(pool *pgxpool.Pool) *VerificationRepo {
+	return newVerificationRepo(pool)
+}
+
+func (r *VerificationRepo) CreateToken(
+	ctx context.Context,
+	token *domain.EmailVerificationToken,
+) (*domain.EmailVerificationToken, error) {
+	row, err := r.q.CreateEmailVerificationToken(
+		ctx,
+		sqlcdb.CreateEmailVerificationTokenParams{
+			UserID:    token.UserID,
+			TokenHash: token.TokenHash,
+			ExpiresAt: pgtype.Timestamptz{
+				Time:  token.ExpiresAt,
+				Valid: true,
+			},
 		},
-	})
+	)
 	if err != nil {
 		return nil, err
 	}
-	return toDomainVerification(row), nil
+
+	return toDomainEmailVerificationToken(row), nil
 }
 
-func (r *VerificationRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.EmailVerification, error) {
-	row, err := r.q.GetVerificationByUserID(ctx, userID)
+func (r *VerificationRepo) GetByHash(
+	ctx context.Context,
+	tokenHash []byte,
+) (*domain.EmailVerificationToken, error) {
+	row, err := r.q.GetEmailVerificationTokenByHash(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidInput
+		}
+		return nil, err
+	}
+
+	return toDomainEmailVerificationToken(row), nil
+}
+
+func (r *VerificationRepo) GetLatestByUserID(
+	ctx context.Context,
+	userID uuid.UUID,
+) (*domain.EmailVerificationToken, error) {
+	row, err := r.q.GetEmailVerificationTokenByUserID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidInput
+		}
+		return nil, err
+	}
+
+	return toDomainEmailVerificationToken(row), nil
+}
+
+func (r *VerificationRepo) GetActiveByUserID(
+	ctx context.Context,
+	userID uuid.UUID,
+) (*domain.EmailVerificationToken, error) {
+	row, err := r.q.GetActiveEmailVerificationToken(ctx, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrInvalidOTP
 		}
 		return nil, err
 	}
-	return toDomainVerification(row), nil
+
+	return toDomainEmailVerificationToken(row), nil
 }
 
-func (r *VerificationRepo) IncrementAttempts(ctx context.Context, userID uuid.UUID) (int, error) {
-	attempts, err := r.q.IncrementVerificationAttempts(ctx, userID)
-	if err != nil {
-		return 0, err
-	}
-	return int(attempts), nil
+func (r *VerificationRepo) IncrementAttempts(
+	ctx context.Context,
+	id uuid.UUID,
+) error {
+	return r.q.IncrementEmailVerificationAttempts(ctx, id)
 }
 
-func (r *VerificationRepo) DeleteByUserID(ctx context.Context, userID uuid.UUID) error {
-	return r.q.DeleteVerificationByUserID(ctx, userID)
+func (r *VerificationRepo) MarkUsed(
+	ctx context.Context,
+	id uuid.UUID,
+) error {
+	return r.q.MarkEmailVerificationTokenUsed(ctx, id)
 }
 
-func toDomainVerification(r sqlcdb.EmailVerification) *domain.EmailVerification {
-	return &domain.EmailVerification{
-		ID:         r.ID,
-		UserID:     r.UserID,
-		OtpHash:    r.OtpHash,
-		Attempts:   int(r.Attempts),
-		ExpiresAt:  r.ExpiresAt.Time,
-		LastSentAt: r.LastSentAt.Time,
-		CreatedAt:  r.CreatedAt.Time,
+func (r *VerificationRepo) DeleteByUserID(
+	ctx context.Context,
+	userID uuid.UUID,
+) error {
+	return r.q.DeleteEmailVerificationTokensByUserID(ctx, userID)
+}
+
+func toDomainEmailVerificationToken(
+	r sqlcdb.IdentityEmailVerificationToken,
+) *domain.EmailVerificationToken {
+	return &domain.EmailVerificationToken{
+		ID:           r.ID,
+		UserID:       r.UserID,
+		TokenHash:    r.TokenHash,
+		AttemptCount: r.AttemptCount,
+		ExpiresAt:    r.ExpiresAt.Time,
+		VerifiedAt:   pgTimestamptzToTime(r.VerifiedAt),
+		CreatedAt:    r.CreatedAt.Time,
 	}
 }

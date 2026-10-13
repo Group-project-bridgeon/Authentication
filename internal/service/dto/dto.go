@@ -34,6 +34,12 @@ type ResetPasswordInput struct {
 	NewPassword string
 }
 
+type GoogleCallbackInput struct {
+	Code        string
+	State       string
+	CookieState string
+}
+
 type AuthResult struct {
 	User      *domain.User
 	Token     string

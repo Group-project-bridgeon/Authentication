@@ -1,12 +1,14 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/group-project/authentication/internal/domain"
 	"github.com/group-project/authentication/internal/helper"
 )
 
@@ -15,8 +17,12 @@ const (
 	ContextUserEmailKey = "userEmail"
 )
 
+type TokenUserProvider interface {
+	GetUserByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+}
+
 // JWTAuth returns a Gin middleware dedicated to validating JWT Bearer tokens.
-func JWTAuth(jwtManager *helper.JWTManager) gin.HandlerFunc {
+func JWTAuth(jwtManager *helper.JWTManager, userProvider TokenUserProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -52,6 +58,21 @@ func JWTAuth(jwtManager *helper.JWTManager) gin.HandlerFunc {
 			}
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "invalid or malformed token",
+			})
+			return
+		}
+
+		if userProvider == nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid or revoked token",
+			})
+			return
+		}
+
+		user, err := userProvider.GetUserByID(c.Request.Context(), claims.UserID)
+		if err != nil || user == nil || !user.IsActive || user.TokenVersion != claims.TokenVersion {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "invalid or revoked token",
 			})
 			return
 		}

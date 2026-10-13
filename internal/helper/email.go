@@ -2,10 +2,12 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/smtp"
 	"strings"
+	"time"
 
 	"github.com/group-project/authentication/internal/config"
 )
@@ -36,7 +38,26 @@ func NewSMTPEmailSender(cfg config.SMTPConfig) *SMTPEmailSender {
 	}
 }
 
-func (s *SMTPEmailSender) SendOTP(_ context.Context, toEmail, toName, otp string) error {
+func sendMailWithContext(ctx context.Context, addr string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	ch := make(chan error, 1)
+	go func() {
+		ch <- smtp.SendMail(addr, auth, from, to, msg)
+	}()
+
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errors.New("smtp connection timed out")
+	case err := <-ch:
+		return err
+	}
+}
+
+func (s *SMTPEmailSender) SendOTP(ctx context.Context, toEmail, toName, otp string) error {
 	addr := fmt.Sprintf("%s:%s", s.host, s.port)
 	var auth smtp.Auth
 	if s.username != "" && s.password != "" {
@@ -56,10 +77,10 @@ func (s *SMTPEmailSender) SendOTP(_ context.Context, toEmail, toName, otp string
 		body,
 	}, "\r\n"))
 
-	return smtp.SendMail(addr, auth, s.from, []string{toEmail}, msg)
+	return sendMailWithContext(ctx, addr, auth, s.from, []string{toEmail}, msg)
 }
 
-func (s *SMTPEmailSender) SendPasswordResetOTP(_ context.Context, toEmail, toName, otp string) error {
+func (s *SMTPEmailSender) SendPasswordResetOTP(ctx context.Context, toEmail, toName, otp string) error {
 	addr := fmt.Sprintf("%s:%s", s.host, s.port)
 	var auth smtp.Auth
 	if s.username != "" && s.password != "" {
@@ -79,7 +100,7 @@ func (s *SMTPEmailSender) SendPasswordResetOTP(_ context.Context, toEmail, toNam
 		body,
 	}, "\r\n"))
 
-	return smtp.SendMail(addr, auth, s.from, []string{toEmail}, msg)
+	return sendMailWithContext(ctx, addr, auth, s.from, []string{toEmail}, msg)
 }
 
 // ConsoleEmailSender logs OTPs to stdout/slog for development and testing.

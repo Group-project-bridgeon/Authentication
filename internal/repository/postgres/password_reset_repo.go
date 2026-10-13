@@ -12,64 +12,139 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// compile-time check: PasswordResetRepo must satisfy domain.PasswordResetRepository
 var _ domain.PasswordResetRepository = (*PasswordResetRepo)(nil)
 
 type PasswordResetRepo struct {
-	q *sqlcdb.Queries
+	q  *sqlcdb.Queries
+	db sqlcdb.DBTX
+}
+
+func newPasswordResetRepo(db sqlcdb.DBTX) *PasswordResetRepo {
+	return &PasswordResetRepo{
+		q:  sqlcdb.New(db),
+		db: db,
+	}
 }
 
 func NewPasswordResetRepo(pool *pgxpool.Pool) *PasswordResetRepo {
-	return &PasswordResetRepo{q: sqlcdb.New(pool)}
+	return newPasswordResetRepo(pool)
 }
 
-func (r *PasswordResetRepo) Upsert(ctx context.Context, p *domain.PasswordReset) (*domain.PasswordReset, error) {
-	row, err := r.q.UpsertPasswordReset(ctx, sqlcdb.UpsertPasswordResetParams{
-		UserID:  p.UserID,
-		OtpHash: p.OtpHash,
-		Attempts: int32(p.Attempts),
-		ExpiresAt: pgtype.Timestamptz{
-			Time:  p.ExpiresAt,
-			Valid: true,
+func (r *PasswordResetRepo) CreateToken(
+	ctx context.Context,
+	token *domain.PasswordResetToken,
+) (*domain.PasswordResetToken, error) {
+	row, err := r.q.CreatePasswordResetToken(
+		ctx,
+		sqlcdb.CreatePasswordResetTokenParams{
+			UserID:    token.UserID,
+			TokenHash: token.TokenHash,
+			ExpiresAt: pgtype.Timestamptz{
+				Time:  token.ExpiresAt,
+				Valid: true,
+			},
 		},
-	})
+	)
 	if err != nil {
 		return nil, err
 	}
-	return toDomainPasswordReset(row), nil
+
+	return toDomainPasswordResetToken(row), nil
 }
 
-func (r *PasswordResetRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.PasswordReset, error) {
-	row, err := r.q.GetPasswordResetByUserID(ctx, userID)
+func (r *PasswordResetRepo) GetByHash(
+	ctx context.Context,
+	tokenHash []byte,
+) (*domain.PasswordResetToken, error) {
+	row, err := r.q.GetPasswordResetTokenByHash(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidInput
+		}
+		return nil, err
+	}
+
+	return toDomainPasswordResetToken(row), nil
+}
+
+func (r *PasswordResetRepo) GetLatestByUserID(
+	ctx context.Context,
+	userID uuid.UUID,
+) (*domain.PasswordResetToken, error) {
+	row, err := r.q.GetPasswordResetTokenByUserID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrInvalidInput
+		}
+		return nil, err
+	}
+
+	return toDomainPasswordResetToken(row), nil
+}
+
+func (r *PasswordResetRepo) GetActiveByUserID(
+	ctx context.Context,
+	userID uuid.UUID,
+) (*domain.PasswordResetToken, error) {
+	row, err := r.q.GetActivePasswordResetToken(ctx, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrInvalidOTP
 		}
 		return nil, err
 	}
-	return toDomainPasswordReset(row), nil
+
+	return toDomainPasswordResetToken(row), nil
 }
 
-func (r *PasswordResetRepo) IncrementAttempts(ctx context.Context, userID uuid.UUID) (int, error) {
-	attempts, err := r.q.IncrementPasswordResetAttempts(ctx, userID)
+func (r *PasswordResetRepo) IncrementAttempts(
+	ctx context.Context,
+	id uuid.UUID,
+) error {
+	return r.q.IncrementPasswordResetAttempts(ctx, id)
+}
+
+func (r *PasswordResetRepo) MarkUsed(
+	ctx context.Context,
+	id uuid.UUID,
+) error {
+	result, err := r.db.Exec(
+		ctx,
+		`UPDATE identity_password_reset_tokens
+		 SET used_at = now()
+		 WHERE id = $1
+		   AND used_at IS NULL
+		   AND expires_at > now()`,
+		id,
+	)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	return int(attempts), nil
+
+	if result.RowsAffected() != 1 {
+		return domain.ErrInvalidOTP
+	}
+
+	return nil
 }
 
-func (r *PasswordResetRepo) DeleteByUserID(ctx context.Context, userID uuid.UUID) error {
-	return r.q.DeletePasswordResetByUserID(ctx, userID)
+func (r *PasswordResetRepo) DeleteByUserID(
+	ctx context.Context,
+	userID uuid.UUID,
+) error {
+	return r.q.DeletePasswordResetTokensByUserID(ctx, userID)
 }
 
-func toDomainPasswordReset(r sqlcdb.PasswordReset) *domain.PasswordReset {
-	return &domain.PasswordReset{
-		ID:         r.ID,
-		UserID:     r.UserID,
-		OtpHash:    r.OtpHash,
-		Attempts:   int(r.Attempts),
-		ExpiresAt:  r.ExpiresAt.Time,
-		LastSentAt: r.LastSentAt.Time,
-		CreatedAt:  r.CreatedAt.Time,
+func toDomainPasswordResetToken(
+	r sqlcdb.IdentityPasswordResetToken,
+) *domain.PasswordResetToken {
+	return &domain.PasswordResetToken{
+		ID:           r.ID,
+		UserID:       r.UserID,
+		TokenHash:    r.TokenHash,
+		AttemptCount: r.AttemptCount,
+		ExpiresAt:    r.ExpiresAt.Time,
+		UsedAt:       pgTimestamptzToTime(r.UsedAt),
+		CreatedAt:    r.CreatedAt.Time,
 	}
 }

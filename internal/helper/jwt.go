@@ -14,8 +14,9 @@ var (
 )
 
 type Claims struct {
-	UserID uuid.UUID `json:"user_id"`
-	Email  string    `json:"email"`
+	UserID       uuid.UUID `json:"user_id"`
+	Email        string    `json:"email"`
+	TokenVersion int32     `json:"token_version"`
 	jwt.RegisteredClaims
 }
 
@@ -36,9 +37,14 @@ func (m *JWTManager) Duration() time.Duration {
 }
 
 func (m *JWTManager) Generate(userID uuid.UUID, email string) (string, error) {
+	return m.GenerateVersioned(userID, email, 0)
+}
+
+func (m *JWTManager) GenerateVersioned(userID uuid.UUID, email string, version int32) (string, error) {
 	claims := Claims{
-		UserID: userID,
-		Email:  email,
+		UserID:       userID,
+		Email:        email,
+		TokenVersion: version,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(m.tokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -56,11 +62,12 @@ func (m *JWTManager) Validate(tokenString string) (*Claims, error) {
 		tokenString,
 		&Claims{},
 		func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			if token.Method == nil || token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
 				return nil, ErrInvalidToken
 			}
 			return m.secretKey, nil
 		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 	)
 
 	if err != nil {
