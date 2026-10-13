@@ -251,6 +251,21 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (IdentityUser, 
 	return i, err
 }
 
+const incrementTokenVersion = `-- name: IncrementTokenVersion :one
+UPDATE identity_users
+SET token_version = token_version + 1,
+    updated_at = now()
+WHERE id = $1
+RETURNING token_version
+`
+
+func (q *Queries) IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementTokenVersion, id)
+	var token_version int32
+	err := row.Scan(&token_version)
+	return token_version, err
+}
+
 const markEmailVerified = `-- name: MarkEmailVerified :exec
 UPDATE identity_users
 SET email_verified_at = now(),

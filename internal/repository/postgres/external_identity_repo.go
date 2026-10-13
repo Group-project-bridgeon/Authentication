@@ -18,10 +18,14 @@ type ExternalIdentityRepo struct {
 	q *sqlcdb.Queries
 }
 
-func NewExternalIdentityRepo(pool *pgxpool.Pool) *ExternalIdentityRepo {
+func newExternalIdentityRepo(db sqlcdb.DBTX) *ExternalIdentityRepo {
 	return &ExternalIdentityRepo{
-		q: sqlcdb.New(pool),
+		q: sqlcdb.New(db),
 	}
+}
+
+func NewExternalIdentityRepo(pool *pgxpool.Pool) *ExternalIdentityRepo {
+	return newExternalIdentityRepo(pool)
 }
 
 func (r *ExternalIdentityRepo) Create(

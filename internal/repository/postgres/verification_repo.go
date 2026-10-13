@@ -18,10 +18,14 @@ type VerificationRepo struct {
 	q *sqlcdb.Queries
 }
 
-func NewVerificationRepo(pool *pgxpool.Pool) *VerificationRepo {
+func newVerificationRepo(db sqlcdb.DBTX) *VerificationRepo {
 	return &VerificationRepo{
-		q: sqlcdb.New(pool),
+		q: sqlcdb.New(db),
 	}
+}
+
+func NewVerificationRepo(pool *pgxpool.Pool) *VerificationRepo {
+	return newVerificationRepo(pool)
 }
 
 func (r *VerificationRepo) CreateToken(

@@ -18,15 +18,19 @@ const uniqueViolation = "23505"
 var _ domain.UserRepository = (*UserRepo)(nil)
 
 type UserRepo struct {
-	q    *sqlcdb.Queries
-	pool *pgxpool.Pool
+	q  *sqlcdb.Queries
+	db sqlcdb.DBTX
+}
+
+func newUserRepo(db sqlcdb.DBTX) *UserRepo {
+	return &UserRepo{
+		q:  sqlcdb.New(db),
+		db: db,
+	}
 }
 
 func NewUserRepo(pool *pgxpool.Pool) *UserRepo {
-	return &UserRepo{
-		q:    sqlcdb.New(pool),
-		pool: pool,
-	}
+	return newUserRepo(pool)
 }
 
 func (r *UserRepo) Create(ctx context.Context, u *domain.User) (*domain.User, error) {
@@ -74,7 +78,7 @@ func (r *UserRepo) SetEmailVerified(ctx context.Context, id uuid.UUID) error {
 }
 
 func (r *UserRepo) UpdateLastLogin(ctx context.Context, id uuid.UUID, loginAt time.Time) error {
-	_, err := r.pool.Exec(
+	_, err := r.db.Exec(
 		ctx,
 		`UPDATE identity_users
 		 SET last_login_at = $2,
@@ -84,6 +88,10 @@ func (r *UserRepo) UpdateLastLogin(ctx context.Context, id uuid.UUID, loginAt ti
 		loginAt,
 	)
 	return err
+}
+
+func (r *UserRepo) IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int32, error) {
+	return r.q.IncrementTokenVersion(ctx, id)
 }
 
 func toDomainUser(r sqlcdb.IdentityUser) *domain.User {

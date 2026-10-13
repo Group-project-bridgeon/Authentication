@@ -109,3 +109,10 @@ INNER JOIN identity_external_identities AS e
     ON e.user_id = u.id
 WHERE e.provider = $1
   AND e.provider_subject = $2;
+
+-- name: IncrementTokenVersion :one
+UPDATE identity_users
+SET token_version = token_version + 1,
+    updated_at = now()
+WHERE id = $1
+RETURNING token_version;

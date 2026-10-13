@@ -40,6 +40,7 @@ type AuthService struct {
 	externalIdentity domain.ExternalIdentityRepository
 	verifications    domain.EmailVerificationRepository
 	passwordResets   domain.PasswordResetRepository
+	txManager        domain.TransactionManager
 	hasher           PasswordHasher
 	tokens           TokenGenerator
 	emailSender      helper.EmailSender
@@ -52,6 +53,7 @@ func NewAuthService(
 	ei domain.ExternalIdentityRepository,
 	v domain.EmailVerificationRepository,
 	pr domain.PasswordResetRepository,
+	tm domain.TransactionManager,
 	h PasswordHasher,
 	t TokenGenerator,
 	e helper.EmailSender,
@@ -63,6 +65,7 @@ func NewAuthService(
 		externalIdentity: ei,
 		verifications:    v,
 		passwordResets:   pr,
+		txManager:        tm,
 		hasher:           h,
 		tokens:           t,
 		emailSender:      e,
@@ -97,22 +100,6 @@ func (s *AuthService) Register(
 		return nil, err
 	}
 
-	user, err := s.users.Create(ctx, &domain.User{
-		Email:    email,
-		FullName: name,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = s.credentials.Create(ctx, &domain.Credential{
-		UserID:       user.ID,
-		PasswordHash: &hash,
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	otp, err := helper.GenerateOTP()
 	if err != nil {
 		return nil, err
@@ -120,13 +107,64 @@ func (s *AuthService) Register(
 
 	otpHash := helper.HashOTP(otp)
 
-	_, err = s.verifications.CreateToken(ctx, &domain.EmailVerificationToken{
-		UserID:    user.ID,
-		TokenHash: []byte(otpHash),
-		ExpiresAt: time.Now().Add(OTPExpirationDuration),
-	})
-	if err != nil {
-		return nil, err
+	var user *domain.User
+
+	txFn := func(uow domain.AuthUnitOfWork) error {
+		var err error
+		user, err = uow.Users().Create(ctx, &domain.User{
+			Email:    email,
+			FullName: name,
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = uow.Credentials().Create(ctx, &domain.Credential{
+			UserID:       user.ID,
+			PasswordHash: &hash,
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = uow.Verifications().CreateToken(ctx, &domain.EmailVerificationToken{
+			UserID:    user.ID,
+			TokenHash: []byte(otpHash),
+			ExpiresAt: time.Now().Add(OTPExpirationDuration),
+		})
+		return err
+	}
+
+	if s.txManager != nil {
+		if err := s.txManager.WithinTransaction(ctx, txFn); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		user, err = s.users.Create(ctx, &domain.User{
+			Email:    email,
+			FullName: name,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = s.credentials.Create(ctx, &domain.Credential{
+			UserID:       user.ID,
+			PasswordHash: &hash,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = s.verifications.CreateToken(ctx, &domain.EmailVerificationToken{
+			UserID:    user.ID,
+			TokenHash: []byte(otpHash),
+			ExpiresAt: time.Now().Add(OTPExpirationDuration),
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := s.emailSender.SendOTP(
@@ -236,15 +274,22 @@ func (s *AuthService) VerifyEmail(
 		return domain.ErrInvalidOTP
 	}
 
+	txFn := func(uow domain.AuthUnitOfWork) error {
+		if err := uow.Verifications().MarkUsed(ctx, token.ID); err != nil {
+			return err
+		}
+		return uow.Users().SetEmailVerified(ctx, user.ID)
+	}
+
+	if s.txManager != nil {
+		return s.txManager.WithinTransaction(ctx, txFn)
+	}
+
 	if err := s.verifications.MarkUsed(ctx, token.ID); err != nil {
 		return err
 	}
 
-	if err := s.users.SetEmailVerified(ctx, user.ID); err != nil {
-		return err
-	}
-
-	return nil
+	return s.users.SetEmailVerified(ctx, user.ID)
 }
 
 func (s *AuthService) ResendOTP(
@@ -258,11 +303,14 @@ func (s *AuthService) ResendOTP(
 
 	user, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
+		if errors.Is(err, domain.ErrUserNotFound) {
+			return nil
+		}
 		return err
 	}
 
 	if user.EmailVerifiedAt != nil {
-		return domain.ErrAlreadyVerified
+		return nil
 	}
 
 	latest, err := s.verifications.GetLatestByUserID(ctx, user.ID)
@@ -277,21 +325,40 @@ func (s *AuthService) ResendOTP(
 
 	otpHash := helper.HashOTP(otp)
 
-	// Remove any existing verification tokens for this user.
-	if err := s.verifications.DeleteByUserID(ctx, user.ID); err != nil {
+	txFn := func(uow domain.AuthUnitOfWork) error {
+		if err := uow.Verifications().DeleteByUserID(ctx, user.ID); err != nil {
+			return err
+		}
+		_, err := uow.Verifications().CreateToken(
+			ctx,
+			&domain.EmailVerificationToken{
+				UserID:    user.ID,
+				TokenHash: []byte(otpHash),
+				ExpiresAt: time.Now().Add(OTPExpirationDuration),
+			},
+		)
 		return err
 	}
 
-	_, err = s.verifications.CreateToken(
-		ctx,
-		&domain.EmailVerificationToken{
-			UserID:    user.ID,
-			TokenHash: []byte(otpHash),
-			ExpiresAt: time.Now().Add(OTPExpirationDuration),
-		},
-	)
-	if err != nil {
-		return err
+	if s.txManager != nil {
+		if err := s.txManager.WithinTransaction(ctx, txFn); err != nil {
+			return err
+		}
+	} else {
+		if err := s.verifications.DeleteByUserID(ctx, user.ID); err != nil {
+			return err
+		}
+		_, err = s.verifications.CreateToken(
+			ctx,
+			&domain.EmailVerificationToken{
+				UserID:    user.ID,
+				TokenHash: []byte(otpHash),
+				ExpiresAt: time.Now().Add(OTPExpirationDuration),
+			},
+		)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := s.emailSender.SendOTP(
@@ -336,21 +403,42 @@ func (s *AuthService) ForgotPassword(
 
 	otpHash := helper.HashOTP(otp)
 
-	// Remove previous reset tokens so only the latest OTP remains valid.
-	if err := s.passwordResets.DeleteByUserID(ctx, user.ID); err != nil {
+	txFn := func(uow domain.AuthUnitOfWork) error {
+		if err := uow.PasswordResets().DeleteByUserID(ctx, user.ID); err != nil {
+			return err
+		}
+		_, err := uow.PasswordResets().CreateToken(
+			ctx,
+			&domain.PasswordResetToken{
+				UserID:    user.ID,
+				TokenHash: []byte(otpHash),
+				ExpiresAt: time.Now().Add(OTPExpirationDuration),
+			},
+		)
 		return err
 	}
 
-	_, err = s.passwordResets.CreateToken(
-		ctx,
-		&domain.PasswordResetToken{
-			UserID:    user.ID,
-			TokenHash: []byte(otpHash),
-			ExpiresAt: time.Now().Add(OTPExpirationDuration),
-		},
-	)
-	if err != nil {
-		return err
+	if s.txManager != nil {
+		if err := s.txManager.WithinTransaction(ctx, txFn); err != nil {
+			return err
+		}
+	} else {
+		// Remove previous reset tokens so only the latest OTP remains valid.
+		if err := s.passwordResets.DeleteByUserID(ctx, user.ID); err != nil {
+			return err
+		}
+
+		_, err = s.passwordResets.CreateToken(
+			ctx,
+			&domain.PasswordResetToken{
+				UserID:    user.ID,
+				TokenHash: []byte(otpHash),
+				ExpiresAt: time.Now().Add(OTPExpirationDuration),
+			},
+		)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := s.emailSender.SendPasswordResetOTP(
@@ -408,7 +496,25 @@ func (s *AuthService) ResetPassword(
 		return err
 	}
 
+	txFn := func(uow domain.AuthUnitOfWork) error {
+		if err := uow.Credentials().UpdatePassword(ctx, user.ID, hash); err != nil {
+			return err
+		}
+		if _, err := uow.Users().IncrementTokenVersion(ctx, user.ID); err != nil {
+			return err
+		}
+		return uow.PasswordResets().MarkUsed(ctx, token.ID)
+	}
+
+	if s.txManager != nil {
+		return s.txManager.WithinTransaction(ctx, txFn)
+	}
+
 	if err := s.credentials.UpdatePassword(ctx, user.ID, hash); err != nil {
+		return err
+	}
+
+	if _, err := s.users.IncrementTokenVersion(ctx, user.ID); err != nil {
 		return err
 	}
 
@@ -503,58 +609,123 @@ func (s *AuthService) GoogleCallback(
 			return nil, domain.ErrInvalidCredentials
 		}
 
-		if oauthUser.VerifiedEmail && user.EmailVerifiedAt == nil {
-			if err := s.users.SetEmailVerified(ctx, user.ID); err == nil {
+		linkFn := func(uow domain.AuthUnitOfWork) error {
+			if oauthUser.VerifiedEmail && user.EmailVerifiedAt == nil {
+				if err := uow.Users().SetEmailVerified(ctx, user.ID); err != nil {
+					return err
+				}
 				now := time.Now()
 				user.EmailVerifiedAt = &now
 			}
+
+			_, err := uow.ExternalIdentities().Create(
+				ctx,
+				&domain.ExternalIdentity{
+					UserID:          user.ID,
+					Provider:        "google",
+					ProviderSubject: oauthUser.ID,
+					EmailAtLink:     &email,
+				},
+			)
+			return err
 		}
 
-		_, err = s.externalIdentity.Create(
-			ctx,
-			&domain.ExternalIdentity{
-				UserID:          user.ID,
-				Provider:        "google",
-				ProviderSubject: oauthUser.ID,
-				EmailAtLink:     &email,
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-	} else if errors.Is(err, domain.ErrUserNotFound) {
-		// Create a new user for the Google account.
-		user, err = s.users.Create(
-			ctx,
-			&domain.User{
-				Email:    email,
-				FullName: strings.TrimSpace(oauthUser.Name),
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// Google already verified the email.
-		if oauthUser.VerifiedEmail {
-			if err := s.users.SetEmailVerified(ctx, user.ID); err != nil {
+		if s.txManager != nil {
+			if err := s.txManager.WithinTransaction(ctx, linkFn); err != nil {
 				return nil, err
 			}
-			now := time.Now()
-			user.EmailVerifiedAt = &now
+		} else {
+			if oauthUser.VerifiedEmail && user.EmailVerifiedAt == nil {
+				if err := s.users.SetEmailVerified(ctx, user.ID); err == nil {
+					now := time.Now()
+					user.EmailVerifiedAt = &now
+				}
+			}
+
+			_, err = s.externalIdentity.Create(
+				ctx,
+				&domain.ExternalIdentity{
+					UserID:          user.ID,
+					Provider:        "google",
+					ProviderSubject: oauthUser.ID,
+					EmailAtLink:     &email,
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else if errors.Is(err, domain.ErrUserNotFound) {
+		// Create a new user for the Google account inside a transaction
+		createFn := func(uow domain.AuthUnitOfWork) error {
+			var createErr error
+			user, createErr = uow.Users().Create(
+				ctx,
+				&domain.User{
+					Email:    email,
+					FullName: strings.TrimSpace(oauthUser.Name),
+				},
+			)
+			if createErr != nil {
+				return createErr
+			}
+
+			if oauthUser.VerifiedEmail {
+				if err := uow.Users().SetEmailVerified(ctx, user.ID); err != nil {
+					return err
+				}
+				now := time.Now()
+				user.EmailVerifiedAt = &now
+			}
+
+			_, createErr = uow.ExternalIdentities().Create(
+				ctx,
+				&domain.ExternalIdentity{
+					UserID:          user.ID,
+					Provider:        "google",
+					ProviderSubject: oauthUser.ID,
+					EmailAtLink:     &email,
+				},
+			)
+			return createErr
 		}
 
-		_, err = s.externalIdentity.Create(
-			ctx,
-			&domain.ExternalIdentity{
-				UserID:          user.ID,
-				Provider:        "google",
-				ProviderSubject: oauthUser.ID,
-				EmailAtLink:     &email,
-			},
-		)
-		if err != nil {
-			return nil, err
+		if s.txManager != nil {
+			if err := s.txManager.WithinTransaction(ctx, createFn); err != nil {
+				return nil, err
+			}
+		} else {
+			user, err = s.users.Create(
+				ctx,
+				&domain.User{
+					Email:    email,
+					FullName: strings.TrimSpace(oauthUser.Name),
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			if oauthUser.VerifiedEmail {
+				if err := s.users.SetEmailVerified(ctx, user.ID); err != nil {
+					return nil, err
+				}
+				now := time.Now()
+				user.EmailVerifiedAt = &now
+			}
+
+			_, err = s.externalIdentity.Create(
+				ctx,
+				&domain.ExternalIdentity{
+					UserID:          user.ID,
+					Provider:        "google",
+					ProviderSubject: oauthUser.ID,
+					EmailAtLink:     &email,
+				},
+			)
+			if err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		return nil, err

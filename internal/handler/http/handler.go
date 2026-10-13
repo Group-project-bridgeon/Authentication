@@ -153,16 +153,14 @@ func (h *AuthHandler) ResendOTP(c *gin.Context) {
 		Email: req.Email,
 	})
 	if err != nil {
-		if errors.Is(err, domain.ErrUserNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-			return
-		}
-		if errors.Is(err, domain.ErrAlreadyVerified) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "email is already verified"})
+		if errors.Is(err, domain.ErrInvalidInput) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
 			return
 		}
 		if errors.Is(err, domain.ErrOTPCooldown) {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "please wait 60 seconds before requesting a new code"})
+			c.JSON(http.StatusOK, gin.H{
+				"message": "if the account is eligible, a verification code has been sent",
+			})
 			return
 		}
 		slog.Error("resend OTP failed", "err", err)
@@ -171,7 +169,7 @@ func (h *AuthHandler) ResendOTP(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "verification code resent to your email",
+		"message": "if the account is eligible, a verification code has been sent",
 	})
 }
 

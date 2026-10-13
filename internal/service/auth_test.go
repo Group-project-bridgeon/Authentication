@@ -81,6 +81,17 @@ func (m *mockUserRepo) UpdateLastLogin(_ context.Context, id uuid.UUID, loginAt 
 	return domain.ErrUserNotFound
 }
 
+func (m *mockUserRepo) IncrementTokenVersion(_ context.Context, id uuid.UUID) (int32, error) {
+	for _, u := range m.users {
+		if u.ID == id {
+			u.TokenVersion++
+			u.UpdatedAt = time.Now()
+			return u.TokenVersion, nil
+		}
+	}
+	return 0, domain.ErrUserNotFound
+}
+
 type mockCredentialRepo struct {
 	credentials map[uuid.UUID]*domain.Credential
 }
@@ -484,6 +495,53 @@ func (m *mockOAuthProvider) IsConfigured() bool {
 	return m.configured
 }
 
+type mockAuthUnitOfWork struct {
+	users          *mockUserRepo
+	credentials    *mockCredentialRepo
+	verifications  *mockVerificationRepo
+	passwordResets *mockPasswordResetRepo
+	external       *mockExternalIdentityRepo
+}
+
+func (u *mockAuthUnitOfWork) Users() domain.UserRepository {
+	return u.users
+}
+
+func (u *mockAuthUnitOfWork) Credentials() domain.CredentialRepository {
+	return u.credentials
+}
+
+func (u *mockAuthUnitOfWork) Verifications() domain.EmailVerificationRepository {
+	return u.verifications
+}
+
+func (u *mockAuthUnitOfWork) PasswordResets() domain.PasswordResetRepository {
+	return u.passwordResets
+}
+
+func (u *mockAuthUnitOfWork) ExternalIdentities() domain.ExternalIdentityRepository {
+	return u.external
+}
+
+type mockTransactionManager struct {
+	uow         *mockAuthUnitOfWork
+	shouldError bool
+	err         error
+}
+
+func (m *mockTransactionManager) WithinTransaction(
+	_ context.Context,
+	fn func(domain.AuthUnitOfWork) error,
+) error {
+	if m.shouldError {
+		if m.err != nil {
+			return m.err
+		}
+		return errors.New("simulated transaction failure")
+	}
+	return fn(m.uow)
+}
+
 func setupTestAuthServiceWithOAuth() (
 	*AuthService,
 	*mockUserRepo,
@@ -518,12 +576,23 @@ func setupTestAuthServiceWithOAuth() (
 		configured: true,
 	}
 
+	txManager := &mockTransactionManager{
+		uow: &mockAuthUnitOfWork{
+			users:          userRepo,
+			credentials:    credentialRepo,
+			verifications:  verificationRepo,
+			passwordResets: resetRepo,
+			external:       externalIdentityRepo,
+		},
+	}
+
 	svc := NewAuthService(
 		userRepo,
 		credentialRepo,
 		externalIdentityRepo,
 		verificationRepo,
 		resetRepo,
+		txManager,
 		hasher,
 		jwtMgr,
 		emailSender,
@@ -1210,4 +1279,159 @@ func TestAuthService_MultiUser_SameOTP_NoCrossCollision(t *testing.T) {
 
 func ptr(value string) *string {
 	return &value
+}
+
+func TestAuthService_ResendOTP_NonexistentEmail_ReturnsNil(t *testing.T) {
+	svc, _, _, _, _, _, _ := setupTestAuthService()
+
+	err := svc.ResendOTP(context.Background(), dto.ResendOTPInput{
+		Email: "nonexistent@example.com",
+	})
+	if err != nil {
+		t.Fatalf("expected nil to avoid account enumeration, got: %v", err)
+	}
+}
+
+func TestAuthService_ResendOTP_VerifiedAccount_ReturnsNil(t *testing.T) {
+	svc, userRepo, _, _, _, _, _ := setupTestAuthService()
+
+	now := time.Now()
+	userRepo.users["verified@example.com"] = &domain.User{
+		ID:              uuid.New(),
+		Email:           "verified@example.com",
+		FullName:        "Verified User",
+		IsActive:        true,
+		EmailVerifiedAt: &now,
+	}
+
+	err := svc.ResendOTP(context.Background(), dto.ResendOTPInput{
+		Email: "verified@example.com",
+	})
+	if err != nil {
+		t.Fatalf("expected nil to avoid account enumeration on verified user, got: %v", err)
+	}
+}
+
+func TestAuthService_ResendOTP_ValidUnverifiedUser_Success(t *testing.T) {
+	svc, userRepo, _, _, verificationRepo, _, emailSender := setupTestAuthService()
+
+	uid := uuid.New()
+	userRepo.users["unverified@example.com"] = &domain.User{
+		ID:              uid,
+		Email:           "unverified@example.com",
+		FullName:        "Unverified User",
+		IsActive:        true,
+		EmailVerifiedAt: nil,
+	}
+	past := time.Now().Add(-2 * time.Minute)
+	tokenId := uuid.New()
+	verificationRepo.verifications[tokenId] = &domain.EmailVerificationToken{
+		ID:        tokenId,
+		UserID:    uid,
+		TokenHash: []byte("old-hash"),
+		ExpiresAt: past,
+		CreatedAt: past,
+	}
+
+	err := svc.ResendOTP(context.Background(), dto.ResendOTPInput{
+		Email: "unverified@example.com",
+	})
+	if err != nil {
+		t.Fatalf("expected successful resend, got: %v", err)
+	}
+	if emailSender.lastOTP == "" {
+		t.Fatal("expected email OTP to be dispatched")
+	}
+}
+
+func TestAuthService_ResetPassword_IncrementsTokenVersion(t *testing.T) {
+	svc, userRepo, credRepo, _, _, resetRepo, _ := setupTestAuthService()
+
+	uid := uuid.New()
+	userRepo.users["resetver@example.com"] = &domain.User{
+		ID:           uid,
+		Email:        "resetver@example.com",
+		FullName:     "Reset Ver",
+		IsActive:     true,
+		TokenVersion: 0,
+	}
+	oldHash := "old-hash-string"
+	credRepo.credentials[uid] = &domain.Credential{
+		UserID:       uid,
+		PasswordHash: &oldHash,
+	}
+
+	otp := "654321"
+	otpHash := helper.HashOTP(otp)
+	resetId := uuid.New()
+	resetRepo.resets[resetId] = &domain.PasswordResetToken{
+		ID:        resetId,
+		UserID:    uid,
+		TokenHash: []byte(otpHash),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+
+	err := svc.ResetPassword(context.Background(), dto.ResetPasswordInput{
+		Email:       "resetver@example.com",
+		OTP:         otp,
+		NewPassword: "NewSecretPassword123!",
+	})
+	if err != nil {
+		t.Fatalf("unexpected reset password error: %v", err)
+	}
+
+	user := userRepo.users["resetver@example.com"]
+	if user.TokenVersion != 1 {
+		t.Errorf("expected TokenVersion to be incremented to 1, got %d", user.TokenVersion)
+	}
+}
+
+func TestAuthService_Register_TransactionRollbackOnFailure(t *testing.T) {
+	userRepo := newMockUserRepo()
+	credentialRepo := newMockCredentialRepo()
+	externalIdentityRepo := newMockExternalIdentityRepo()
+	verificationRepo := newMockVerificationRepo()
+	resetRepo := newMockPasswordResetRepo()
+	emailSender := &mockEmailSender{}
+
+	txManager := &mockTransactionManager{
+		uow: &mockAuthUnitOfWork{
+			users:          userRepo,
+			credentials:    credentialRepo,
+			verifications:  verificationRepo,
+			passwordResets: resetRepo,
+			external:       externalIdentityRepo,
+		},
+		shouldError: true,
+	}
+
+	hasher := helper.NewBcrypt()
+	jwtMgr := helper.NewJWTManager("test-jwt-secret-at-least-32-bytes-long", time.Hour)
+	oauthProvider := &mockOAuthProvider{}
+
+	svc := NewAuthService(
+		userRepo,
+		credentialRepo,
+		externalIdentityRepo,
+		verificationRepo,
+		resetRepo,
+		txManager,
+		hasher,
+		jwtMgr,
+		emailSender,
+		oauthProvider,
+	)
+
+	_, err := svc.Register(context.Background(), dto.RegisterInput{
+		Email:    "failtx@example.com",
+		Name:     "Fail Tx",
+		Password: "Password123!",
+	})
+	if err == nil {
+		t.Fatal("expected error on failed transaction, got nil")
+	}
+
+	if emailSender.lastOTP != "" {
+		t.Errorf("expected no email dispatched on transaction failure, got %s", emailSender.lastOTP)
+	}
 }

@@ -18,10 +18,14 @@ type CredentialRepo struct {
 	q *sqlcdb.Queries
 }
 
-func NewCredentialRepo(pool *pgxpool.Pool) *CredentialRepo {
+func newCredentialRepo(db sqlcdb.DBTX) *CredentialRepo {
 	return &CredentialRepo{
-		q: sqlcdb.New(pool),
+		q: sqlcdb.New(db),
 	}
+}
+
+func NewCredentialRepo(pool *pgxpool.Pool) *CredentialRepo {
+	return newCredentialRepo(pool)
 }
 
 func (r *CredentialRepo) Create(

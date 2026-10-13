@@ -18,10 +18,14 @@ type PasswordResetRepo struct {
 	q *sqlcdb.Queries
 }
 
-func NewPasswordResetRepo(pool *pgxpool.Pool) *PasswordResetRepo {
+func newPasswordResetRepo(db sqlcdb.DBTX) *PasswordResetRepo {
 	return &PasswordResetRepo{
-		q: sqlcdb.New(pool),
+		q: sqlcdb.New(db),
 	}
+}
+
+func NewPasswordResetRepo(pool *pgxpool.Pool) *PasswordResetRepo {
+	return newPasswordResetRepo(pool)
 }
 
 func (r *PasswordResetRepo) CreateToken(

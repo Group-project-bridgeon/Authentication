@@ -10,14 +10,16 @@ import (
 )
 
 type Route struct {
-	authHandler *handler.AuthHandler
-	jwtManager  *helper.JWTManager
+	authHandler  *handler.AuthHandler
+	jwtManager   *helper.JWTManager
+	userProvider middleware.TokenUserProvider
 }
 
-func NewRouter(h *handler.AuthHandler, j *helper.JWTManager) *Route {
+func NewRouter(h *handler.AuthHandler, j *helper.JWTManager, up middleware.TokenUserProvider) *Route {
 	return &Route{
-		authHandler: h,
-		jwtManager:  j,
+		authHandler:  h,
+		jwtManager:   j,
+		userProvider: up,
 	}
 }
 
@@ -46,7 +48,7 @@ func (s *Route) Router() *gin.Engine {
 
 		// Dedicated JWT protected routes
 		protected := api.Group("")
-		protected.Use(middleware.JWTAuth(s.jwtManager))
+		protected.Use(middleware.JWTAuth(s.jwtManager, s.userProvider))
 		{
 			protected.GET("/me", s.authHandler.Me)
 		}

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -61,5 +62,45 @@ func TestJWTManager_InvalidSignature(t *testing.T) {
 	_, err = manager2.Validate(token)
 	if err != ErrInvalidToken {
 		t.Fatalf("expected ErrInvalidToken, got: %v", err)
+	}
+}
+
+func TestJWTManager_RejectsNonHS256Algorithms(t *testing.T) {
+	secret := "test-secret-key-1234567890123456"
+	manager := NewJWTManager(secret, 1*time.Hour)
+	userID := uuid.New()
+
+	claims := Claims{
+		UserID:       userID,
+		Email:        "algo@example.com",
+		TokenVersion: 0,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	// 1. HS384 token
+	hs384Token := jwt.NewWithClaims(jwt.SigningMethodHS384, claims)
+	signedHS384, err := hs384Token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("failed to sign token with HS384: %v", err)
+	}
+
+	_, err = manager.Validate(signedHS384)
+	if err != ErrInvalidToken {
+		t.Fatalf("expected ErrInvalidToken when validating HS384 token, got: %v", err)
+	}
+
+	// 2. HS512 token
+	hs512Token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
+	signedHS512, err := hs512Token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("failed to sign token with HS512: %v", err)
+	}
+
+	_, err = manager.Validate(signedHS512)
+	if err != ErrInvalidToken {
+		t.Fatalf("expected ErrInvalidToken when validating HS512 token, got: %v", err)
 	}
 }

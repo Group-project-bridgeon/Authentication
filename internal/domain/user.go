@@ -46,4 +46,5 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
 	SetEmailVerified(ctx context.Context, id uuid.UUID) error
 	UpdateLastLogin(ctx context.Context, id uuid.UUID, loginAt time.Time) error
+	IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int32, error)
 }

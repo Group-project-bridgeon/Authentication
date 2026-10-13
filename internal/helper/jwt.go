@@ -62,11 +62,12 @@ func (m *JWTManager) Validate(tokenString string) (*Claims, error) {
 		tokenString,
 		&Claims{},
 		func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			if token.Method == nil || token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
 				return nil, ErrInvalidToken
 			}
 			return m.secretKey, nil
 		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
 	)
 
 	if err != nil {

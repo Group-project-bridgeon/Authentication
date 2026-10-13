@@ -50,6 +50,7 @@ func run() error {
 	externalIdentityRepo := postgres.NewExternalIdentityRepo(pool)
 	verificationRepo := postgres.NewVerificationRepo(pool)
 	passwordResetRepo := postgres.NewPasswordResetRepo(pool)
+	txManager := postgres.NewTransactionManager(pool)
 
 	authSvc := service.NewAuthService(
 		usrRepo,
@@ -57,6 +58,7 @@ func run() error {
 		externalIdentityRepo,
 		verificationRepo,
 		passwordResetRepo,
+		txManager,
 		helper.NewBcrypt(),
 		jwtManager,
 		emailSender,
@@ -67,7 +69,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           router.NewRouter(authHandler, jwtManager).Router(),
+		Handler:           router.NewRouter(authHandler, jwtManager, authSvc).Router(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
