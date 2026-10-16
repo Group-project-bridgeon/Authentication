@@ -26,12 +26,8 @@ type PasswordHasher interface {
 }
 
 type TokenGenerator interface {
-	Generate(userID uuid.UUID, email string) (string, error)
+	GenerateWithPermissions(userID uuid.UUID, email string, version int32, permissions []string) (string, error)
 	Duration() time.Duration
-}
-
-type versionedTokenGenerator interface {
-	GenerateVersioned(userID uuid.UUID, email string, version int32) (string, error)
 }
 
 type AuthService struct {
@@ -40,6 +36,7 @@ type AuthService struct {
 	externalIdentity domain.ExternalIdentityRepository
 	verifications    domain.EmailVerificationRepository
 	passwordResets   domain.PasswordResetRepository
+	permissions      domain.PermissionRepository
 	txManager        domain.TransactionManager
 	hasher           PasswordHasher
 	tokens           TokenGenerator
@@ -53,6 +50,7 @@ func NewAuthService(
 	ei domain.ExternalIdentityRepository,
 	v domain.EmailVerificationRepository,
 	pr domain.PasswordResetRepository,
+	p domain.PermissionRepository,
 	tm domain.TransactionManager,
 	h PasswordHasher,
 	t TokenGenerator,
@@ -65,6 +63,7 @@ func NewAuthService(
 		externalIdentity: ei,
 		verifications:    v,
 		passwordResets:   pr,
+		permissions:      p,
 		txManager:        tm,
 		hasher:           h,
 		tokens:           t,
@@ -77,11 +76,29 @@ func normalize(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-func (s *AuthService) generateToken(u *domain.User) (string, error) {
-	if t, ok := s.tokens.(versionedTokenGenerator); ok {
-		return t.GenerateVersioned(u.ID, u.Email, u.TokenVersion)
+func (s *AuthService) generateToken(ctx context.Context, u *domain.User) (string, error) {
+	if s.permissions == nil {
+		return "", errors.New("permission repository is required")
 	}
-	return s.tokens.Generate(u.ID, u.Email)
+	if s.tokens == nil {
+		return "", errors.New("token generator is required")
+	}
+
+	perms, err := s.permissions.GetGlobalPermissions(ctx, u.ID)
+	if err != nil {
+		return "", err
+	}
+
+	claimPerms := make([]string, 0, len(perms))
+	for _, p := range perms {
+		formatted, err := helper.FormatPermission(p.Resource, p.Action)
+		if err != nil {
+			return "", err
+		}
+		claimPerms = append(claimPerms, formatted)
+	}
+
+	return s.tokens.GenerateWithPermissions(u.ID, u.Email, u.TokenVersion, claimPerms)
 }
 
 func (s *AuthService) Register(
@@ -223,7 +240,7 @@ func (s *AuthService) Login(
 	}
 	user.LastLoginAt = &now
 
-	token, err := s.generateToken(user)
+	token, err := s.generateToken(ctx, user)
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +615,7 @@ func (s *AuthService) GoogleCallback(
 		}
 		user.LastLoginAt = &now
 
-		token, err := s.generateToken(user)
+		token, err := s.generateToken(ctx, user)
 		if err != nil {
 			return nil, err
 		}
@@ -748,7 +765,7 @@ func (s *AuthService) GoogleCallback(
 	}
 	user.LastLoginAt = &now
 
-	token, err := s.generateToken(user)
+	token, err := s.generateToken(ctx, user)
 	if err != nil {
 		return nil, err
 	}

@@ -186,3 +186,16 @@ WHERE ur.user_id = $1
           AND ur.scope_id = $3
       )
   );
+
+
+-- name: GetUserGlobalPermissions :many
+SELECT DISTINCT p.*
+FROM identity_permissions AS p
+INNER JOIN identity_role_permissions AS rp
+    ON rp.permission_id = p.id
+INNER JOIN identity_user_roles AS ur
+    ON ur.role_id = rp.role_id
+WHERE ur.user_id = $1
+  AND ur.scope_type = 'GLOBAL'
+  AND ur.scope_id IS NULL
+ORDER BY p.resource, p.action;

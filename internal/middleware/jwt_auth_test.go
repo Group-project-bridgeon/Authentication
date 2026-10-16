@@ -2,12 +2,15 @@ package middleware
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/group-project/authentication/internal/domain"
 	"github.com/group-project/authentication/internal/helper"
@@ -15,6 +18,22 @@ import (
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+func newTestJWTManager(t *testing.T) (*helper.JWTManager, *rsa.PrivateKey) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := helper.NewJWTManager(key, "erp-auth", "erp-api", 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return manager, key
 }
 
 type mockTokenUserProvider struct {
@@ -48,7 +67,7 @@ func setupTestRouter(jwtMgr *helper.JWTManager, up TokenUserProvider) *gin.Engin
 }
 
 func TestJWTAuth_MissingHeader(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	r := setupTestRouter(jwtMgr, nil)
 
 	req, _ := http.NewRequest(http.MethodGet, "/test-protected", nil)
@@ -61,7 +80,7 @@ func TestJWTAuth_MissingHeader(t *testing.T) {
 }
 
 func TestJWTAuth_MalformedHeader(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	r := setupTestRouter(jwtMgr, nil)
 
 	testCases := []string{
@@ -83,10 +102,29 @@ func TestJWTAuth_MalformedHeader(t *testing.T) {
 }
 
 func TestJWTAuth_ExpiredToken(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", -1*time.Hour)
+	jwtMgr, key := newTestJWTManager(t)
 	r := setupTestRouter(jwtMgr, nil)
 
-	token, _ := jwtMgr.Generate(uuid.New(), "expired@example.com")
+	past := time.Now().UTC().Add(-20 * time.Minute)
+	userID := uuid.New()
+	claims := helper.Claims{
+		UserID:       userID,
+		Email:        "expired@example.com",
+		TokenVersion: 0,
+		Permissions:  []string{},
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "erp-auth",
+			Audience:  jwt.ClaimStrings{"erp-api"},
+			Subject:   userID.String(),
+			IssuedAt:  jwt.NewNumericDate(past),
+			NotBefore: jwt.NewNumericDate(past),
+			ExpiresAt: jwt.NewNumericDate(past.Add(10 * time.Minute)),
+		},
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
+	if err != nil {
+		t.Fatalf("unexpected token generation error: %v", err)
+	}
 
 	req, _ := http.NewRequest(http.MethodGet, "/test-protected", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -99,8 +137,8 @@ func TestJWTAuth_ExpiredToken(t *testing.T) {
 }
 
 func TestJWTAuth_InvalidSignature(t *testing.T) {
-	jwtMgr1 := helper.NewJWTManager("secret-key-one-at-least-32-bytes-long", 1*time.Hour)
-	jwtMgr2 := helper.NewJWTManager("secret-key-two-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr1, _ := newTestJWTManager(t)
+	jwtMgr2, _ := newTestJWTManager(t)
 	r := setupTestRouter(jwtMgr2, nil)
 
 	token, _ := jwtMgr1.Generate(uuid.New(), "test@example.com")
@@ -116,7 +154,7 @@ func TestJWTAuth_InvalidSignature(t *testing.T) {
 }
 
 func TestJWTAuth_ValidToken_SameTokenVersion(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	userID := uuid.New()
 	email := "valid@example.com"
 
@@ -148,7 +186,7 @@ func TestJWTAuth_ValidToken_SameTokenVersion(t *testing.T) {
 }
 
 func TestJWTAuth_TokenVersionMismatch(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	userID := uuid.New()
 	email := "valid@example.com"
 
@@ -181,7 +219,7 @@ func TestJWTAuth_TokenVersionMismatch(t *testing.T) {
 }
 
 func TestJWTAuth_InactiveUser(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	userID := uuid.New()
 	email := "inactive@example.com"
 
@@ -210,7 +248,7 @@ func TestJWTAuth_InactiveUser(t *testing.T) {
 }
 
 func TestJWTAuth_MissingUser(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", 1*time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	userID := uuid.New()
 	email := "missing@example.com"
 
@@ -232,7 +270,7 @@ func TestJWTAuth_MissingUser(t *testing.T) {
 }
 
 func TestJWTAuth_ValidTokenWithoutUserProvider_FailsClosed(t *testing.T) {
-	jwtMgr := helper.NewJWTManager("test-secret-at-least-32-bytes-long", time.Hour)
+	jwtMgr, _ := newTestJWTManager(t)
 	userID := uuid.New()
 	token, err := jwtMgr.GenerateVersioned(userID, "failclosed@example.com", 0)
 	if err != nil {

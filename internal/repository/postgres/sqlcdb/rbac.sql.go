@@ -278,6 +278,44 @@ func (q *Queries) GetRolePermissions(ctx context.Context, roleID uuid.UUID) ([]I
 	return items, nil
 }
 
+const getUserGlobalPermissions = `-- name: GetUserGlobalPermissions :many
+SELECT DISTINCT p.id, p.resource, p.action, p.description
+FROM identity_permissions AS p
+INNER JOIN identity_role_permissions AS rp
+    ON rp.permission_id = p.id
+INNER JOIN identity_user_roles AS ur
+    ON ur.role_id = rp.role_id
+WHERE ur.user_id = $1
+  AND ur.scope_type = 'GLOBAL'
+  AND ur.scope_id IS NULL
+ORDER BY p.resource, p.action
+`
+
+func (q *Queries) GetUserGlobalPermissions(ctx context.Context, userID uuid.UUID) ([]IdentityPermission, error) {
+	rows, err := q.db.Query(ctx, getUserGlobalPermissions, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IdentityPermission
+	for rows.Next() {
+		var i IdentityPermission
+		if err := rows.Scan(
+			&i.ID,
+			&i.Resource,
+			&i.Action,
+			&i.Description,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getUserPermissions = `-- name: GetUserPermissions :many
 
 SELECT DISTINCT p.id, p.resource, p.action, p.description

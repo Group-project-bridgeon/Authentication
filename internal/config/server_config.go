@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -22,12 +23,14 @@ type GoogleOAuthConfig struct {
 }
 
 type Config struct {
-	Port        string
-	DatabaseURL string
-	JWTSecret   string
-	JWTExpiry   time.Duration
-	SMTP        SMTPConfig
-	GoogleOAuth GoogleOAuthConfig
+	Port              string
+	DatabaseURL       string
+	JWTPrivateKeyPath string
+	JWTIssuer         string
+	JWTAudience       string
+	JWTExpiry         time.Duration
+	SMTP              SMTPConfig
+	GoogleOAuth       GoogleOAuthConfig
 }
 
 func Load() (*Config, error) {
@@ -44,24 +47,34 @@ func Load() (*Config, error) {
 		port = "8080"
 	}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	env := os.Getenv("ENV")
-	if env == "" {
-		env = os.Getenv("APP_ENV")
-	}
-	if jwtSecret == "" {
-		if env == "production" || env == "prod" {
-			return nil, errors.New("JWT_SECRET must be set in production environment")
-		}
-		jwtSecret = "default-jwt-secret-key-change-in-production"
+	jwtPrivateKeyPath := os.Getenv("JWT_PRIVATE_KEY_PATH")
+	if strings.TrimSpace(jwtPrivateKeyPath) == "" {
+		return nil, errors.New("JWT_PRIVATE_KEY_PATH is required")
 	}
 
-	jwtExpiryStr := os.Getenv("JWT_EXPIRY")
+	jwtIssuer := os.Getenv("JWT_ISSUER")
+	if strings.TrimSpace(jwtIssuer) == "" ||
+		jwtIssuer != strings.TrimSpace(jwtIssuer) {
+		return nil, errors.New("JWT_ISSUER must be nonblank without surrounding whitespace")
+	}
+
+	jwtAudience := os.Getenv("JWT_AUDIENCE")
+	if strings.TrimSpace(jwtAudience) == "" ||
+		jwtAudience != strings.TrimSpace(jwtAudience) {
+		return nil, errors.New("JWT_AUDIENCE must be nonblank without surrounding whitespace")
+	}
+
 	jwtExpiry := 15 * time.Minute
-	if jwtExpiryStr != "" {
-		if parsed, err := time.ParseDuration(jwtExpiryStr); err == nil {
-			jwtExpiry = parsed
+	if raw := os.Getenv("JWT_EXPIRY"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, errors.New("JWT_EXPIRY must be a valid duration")
 		}
+		jwtExpiry = parsed
+	}
+
+	if jwtExpiry < time.Second || jwtExpiry > 15*time.Minute {
+		return nil, errors.New("JWT_EXPIRY must be between 1s and 15m")
 	}
 
 	smtpPort := os.Getenv("SMTP_PORT")
@@ -100,11 +113,13 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Port:        port,
-		DatabaseURL: dbURL,
-		JWTSecret:   jwtSecret,
-		JWTExpiry:   jwtExpiry,
-		SMTP:        smtpConfig,
-		GoogleOAuth: googleOAuthConfig,
+		Port:              port,
+		DatabaseURL:       dbURL,
+		JWTPrivateKeyPath: jwtPrivateKeyPath,
+		JWTIssuer:         jwtIssuer,
+		JWTAudience:       jwtAudience,
+		JWTExpiry:         jwtExpiry,
+		SMTP:              smtpConfig,
+		GoogleOAuth:       googleOAuthConfig,
 	}, nil
 }
