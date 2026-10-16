@@ -30,13 +30,27 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	privateKey, err := helper.LoadRSAPrivateKey(cfg.JWTPrivateKeyPath)
+	if err != nil {
+		return err
+	}
+
+	jwtManager, err := helper.NewJWTManager(
+		privateKey,
+		cfg.JWTIssuer,
+		cfg.JWTAudience,
+		cfg.JWTExpiry,
+	)
+	if err != nil {
+		return err
+	}
+
 	pool, err := database.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 
-	jwtManager := helper.NewJWTManager(cfg.JWTSecret, cfg.JWTExpiry)
 	emailSender := helper.NewEmailSender(cfg.SMTP)
 	googleOAuth := helper.NewGoogleOAuthProvider(cfg.GoogleOAuth)
 	if googleOAuth.IsConfigured() {
@@ -50,6 +64,7 @@ func run() error {
 	externalIdentityRepo := postgres.NewExternalIdentityRepo(pool)
 	verificationRepo := postgres.NewVerificationRepo(pool)
 	passwordResetRepo := postgres.NewPasswordResetRepo(pool)
+	permissionRepo := postgres.NewPermissionRepo(pool)
 	txManager := postgres.NewTransactionManager(pool)
 
 	authSvc := service.NewAuthService(
@@ -58,6 +73,7 @@ func run() error {
 		externalIdentityRepo,
 		verificationRepo,
 		passwordResetRepo,
+		permissionRepo,
 		txManager,
 		helper.NewBcrypt(),
 		jwtManager,

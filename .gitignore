@@ -1,3 +1,6 @@
 #enviornmental variables
 .env
 bin/
+
+# Local JWT keys
+/keys/

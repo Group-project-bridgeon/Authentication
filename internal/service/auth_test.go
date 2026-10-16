@@ -2,7 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +16,30 @@ import (
 	"github.com/group-project/authentication/internal/helper"
 	"github.com/group-project/authentication/internal/service/dto"
 )
+
+var (
+	testRSAKeyOnce sync.Once
+	testRSAKey     *rsa.PrivateKey
+)
+
+func getTestRSAKey() *rsa.PrivateKey {
+	testRSAKeyOnce.Do(func() {
+		var err error
+		testRSAKey, err = rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			panic(err)
+		}
+	})
+	return testRSAKey
+}
+
+func testJWTManager() *helper.JWTManager {
+	manager, err := helper.NewJWTManager(getTestRSAKey(), "erp-auth", "erp-api", 15*time.Minute)
+	if err != nil {
+		panic(err)
+	}
+	return manager
+}
 
 type mockUserRepo struct {
 	users               map[string]*domain.User
@@ -550,6 +579,29 @@ func (m *mockTransactionManager) WithinTransaction(
 	return fn(m.uow)
 }
 
+type mockPermissionRepo struct {
+	permissions map[uuid.UUID][]domain.Permission
+	err         error
+	calledWith  uuid.UUID
+}
+
+func newMockPermissionRepo() *mockPermissionRepo {
+	return &mockPermissionRepo{
+		permissions: make(map[uuid.UUID][]domain.Permission),
+	}
+}
+
+func (m *mockPermissionRepo) GetGlobalPermissions(_ context.Context, userID uuid.UUID) ([]domain.Permission, error) {
+	m.calledWith = userID
+	if m.err != nil {
+		return nil, m.err
+	}
+	if perms, exists := m.permissions[userID]; exists {
+		return perms, nil
+	}
+	return []domain.Permission{}, nil
+}
+
 func setupTestAuthServiceWithOAuth() (
 	*AuthService,
 	*mockUserRepo,
@@ -565,13 +617,11 @@ func setupTestAuthServiceWithOAuth() (
 	externalIdentityRepo := newMockExternalIdentityRepo()
 	verificationRepo := newMockVerificationRepo()
 	resetRepo := newMockPasswordResetRepo()
+	permissionRepo := newMockPermissionRepo()
 	emailSender := &mockEmailSender{}
 
 	hasher := helper.NewBcrypt()
-	jwtMgr := helper.NewJWTManager(
-		"test-jwt-secret-at-least-32-bytes-long",
-		time.Hour,
-	)
+	jwtMgr := testJWTManager()
 
 	oauthProvider := &mockOAuthProvider{
 		authURL: "https://accounts.google.com/o/oauth2/auth",
@@ -600,6 +650,7 @@ func setupTestAuthServiceWithOAuth() (
 		externalIdentityRepo,
 		verificationRepo,
 		resetRepo,
+		permissionRepo,
 		txManager,
 		hasher,
 		jwtMgr,
@@ -630,6 +681,64 @@ func setupTestAuthService() (
 		setupTestAuthServiceWithOAuth()
 
 	return svc, users, credentials, external, verification, reset, email
+}
+
+func setupTestAuthServiceWithPermissions() (
+	*AuthService,
+	*mockUserRepo,
+	*mockCredentialRepo,
+	*mockExternalIdentityRepo,
+	*mockPermissionRepo,
+	*helper.JWTManager,
+	*mockOAuthProvider,
+) {
+	userRepo := newMockUserRepo()
+	credentialRepo := newMockCredentialRepo()
+	externalIdentityRepo := newMockExternalIdentityRepo()
+	verificationRepo := newMockVerificationRepo()
+	resetRepo := newMockPasswordResetRepo()
+	permissionRepo := newMockPermissionRepo()
+	emailSender := &mockEmailSender{}
+
+	hasher := helper.NewBcrypt()
+	jwtMgr := testJWTManager()
+
+	oauthProvider := &mockOAuthProvider{
+		authURL: "https://accounts.google.com/o/oauth2/auth",
+		oauthUser: &helper.OAuthUser{
+			ID:            "google-12345",
+			Email:         "googleuser@example.com",
+			VerifiedEmail: true,
+			Name:          "Google User",
+		},
+		configured: true,
+	}
+
+	txManager := &mockTransactionManager{
+		uow: &mockAuthUnitOfWork{
+			users:          userRepo,
+			credentials:    credentialRepo,
+			verifications:  verificationRepo,
+			passwordResets: resetRepo,
+			external:       externalIdentityRepo,
+		},
+	}
+
+	svc := NewAuthService(
+		userRepo,
+		credentialRepo,
+		externalIdentityRepo,
+		verificationRepo,
+		resetRepo,
+		permissionRepo,
+		txManager,
+		hasher,
+		jwtMgr,
+		emailSender,
+		oauthProvider,
+	)
+
+	return svc, userRepo, credentialRepo, externalIdentityRepo, permissionRepo, jwtMgr, oauthProvider
 }
 
 func TestAuthService_Register_Success(t *testing.T) {
@@ -1414,7 +1523,7 @@ func TestAuthService_Register_TransactionRollbackOnFailure(t *testing.T) {
 	}
 
 	hasher := helper.NewBcrypt()
-	jwtMgr := helper.NewJWTManager("test-jwt-secret-at-least-32-bytes-long", time.Hour)
+	jwtMgr := testJWTManager()
 	oauthProvider := &mockOAuthProvider{}
 
 	svc := NewAuthService(
@@ -1423,6 +1532,7 @@ func TestAuthService_Register_TransactionRollbackOnFailure(t *testing.T) {
 		externalIdentityRepo,
 		verificationRepo,
 		resetRepo,
+		newMockPermissionRepo(),
 		txManager,
 		hasher,
 		jwtMgr,
@@ -1596,7 +1706,7 @@ func TestAuthService_GoogleCallback_NilOAuthProvider_DoesNotPanic(t *testing.T) 
 	emailSender := &mockEmailSender{}
 
 	hasher := helper.NewBcrypt()
-	jwtMgr := helper.NewJWTManager("test-jwt-secret-at-least-32-bytes-long", time.Hour)
+	jwtMgr := testJWTManager()
 
 	txManager := &mockTransactionManager{
 		uow: &mockAuthUnitOfWork{
@@ -1615,6 +1725,7 @@ func TestAuthService_GoogleCallback_NilOAuthProvider_DoesNotPanic(t *testing.T) 
 		externalIdentityRepo,
 		verificationRepo,
 		resetRepo,
+		newMockPermissionRepo(),
 		txManager,
 		hasher,
 		jwtMgr,
@@ -1690,7 +1801,7 @@ func TestAuthService_GoogleCallback_SetEmailVerifiedError_InFallbackPath(t *test
 	emailSender := &mockEmailSender{}
 
 	hasher := helper.NewBcrypt()
-	jwtMgr := helper.NewJWTManager("test-jwt-secret-at-least-32-bytes-long", time.Hour)
+	jwtMgr := testJWTManager()
 
 	oauthProvider := &mockOAuthProvider{
 		authURL: "https://accounts.google.com/o/oauth2/auth",
@@ -1710,6 +1821,7 @@ func TestAuthService_GoogleCallback_SetEmailVerifiedError_InFallbackPath(t *test
 		externalIdentityRepo,
 		verificationRepo,
 		resetRepo,
+		newMockPermissionRepo(),
 		nil, // no txManager → fallback path
 		hasher,
 		jwtMgr,
@@ -1755,5 +1867,471 @@ func TestAuthService_GoogleCallback_SetEmailVerifiedError_InFallbackPath(t *test
 	// Verify the user was not marked as email-verified (error was injected before that).
 	if existing.EmailVerifiedAt != nil {
 		t.Fatal("user.EmailVerifiedAt must remain nil when SetEmailVerified fails")
+	}
+}
+
+func TestAuthService_Login_LoadsPermissionsAndVersion(t *testing.T) {
+	svc, userRepo, credentialRepo, _, permissionRepo, jwtMgr, _ := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "loginperms@example.com",
+		FullName:        "Login Perms",
+		IsActive:        true,
+		TokenVersion:    5,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	user.EmailVerifiedAt = &now
+
+	hasher := helper.NewBcrypt()
+	hash, err := hasher.Hash("ValidPassword123")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	_, err = credentialRepo.Create(context.Background(), &domain.Credential{
+		UserID:       user.ID,
+		PasswordHash: &hash,
+	})
+	if err != nil {
+		t.Fatalf("failed to create credential: %v", err)
+	}
+
+	permissionRepo.permissions[user.ID] = []domain.Permission{
+		{Resource: "catalog", Action: "read"},
+		{Resource: "products", Action: "write"},
+	}
+
+	res, err := svc.Login(context.Background(), dto.LoginInput{
+		Email:    "loginperms@example.com",
+		Password: "ValidPassword123",
+	})
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	if permissionRepo.calledWith != user.ID {
+		t.Fatalf("expected permission repo called with %s, got %s", user.ID, permissionRepo.calledWith)
+	}
+
+	claims, err := jwtMgr.Validate(res.Token)
+	if err != nil {
+		t.Fatalf("failed to validate issued token: %v", err)
+	}
+
+	if claims.TokenVersion != 5 {
+		t.Fatalf("expected token version 5, got %d", claims.TokenVersion)
+	}
+
+	expected := []string{"catalog:read", "products:write"}
+	if !reflect.DeepEqual(claims.Permissions, expected) {
+		t.Fatalf("expected permissions %+v, got %+v", expected, claims.Permissions)
+	}
+}
+
+func TestAuthService_Login_EmptyPermissionsAllowed(t *testing.T) {
+	svc, userRepo, credentialRepo, _, _, jwtMgr, _ := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "emptyperms@example.com",
+		FullName:        "Empty Perms",
+		IsActive:        true,
+		TokenVersion:    1,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	user.EmailVerifiedAt = &now
+
+	hasher := helper.NewBcrypt()
+	hash, err := hasher.Hash("ValidPassword123")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	_, err = credentialRepo.Create(context.Background(), &domain.Credential{
+		UserID:       user.ID,
+		PasswordHash: &hash,
+	})
+	if err != nil {
+		t.Fatalf("failed to create credential: %v", err)
+	}
+
+	res, err := svc.Login(context.Background(), dto.LoginInput{
+		Email:    "emptyperms@example.com",
+		Password: "ValidPassword123",
+	})
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+
+	claims, err := jwtMgr.Validate(res.Token)
+	if err != nil {
+		t.Fatalf("failed to validate issued token: %v", err)
+	}
+
+	if claims.Permissions == nil || len(claims.Permissions) != 0 {
+		t.Fatalf("expected empty permissions slice, got %+v", claims.Permissions)
+	}
+}
+
+func TestAuthService_Login_PermissionLookupFailure_Fails(t *testing.T) {
+	svc, userRepo, credentialRepo, _, permissionRepo, _, _ := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "permlookupfail@example.com",
+		FullName:        "Perm Lookup Fail",
+		IsActive:        true,
+		TokenVersion:    1,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	user.EmailVerifiedAt = &now
+
+	hasher := helper.NewBcrypt()
+	hash, err := hasher.Hash("ValidPassword123")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	_, err = credentialRepo.Create(context.Background(), &domain.Credential{
+		UserID:       user.ID,
+		PasswordHash: &hash,
+	})
+	if err != nil {
+		t.Fatalf("failed to create credential: %v", err)
+	}
+
+	dbErr := errors.New("database connection refused during permission lookup")
+	permissionRepo.err = dbErr
+
+	res, err := svc.Login(context.Background(), dto.LoginInput{
+		Email:    "permlookupfail@example.com",
+		Password: "ValidPassword123",
+	})
+	if err == nil {
+		t.Fatal("expected login to fail when permission lookup fails, but succeeded")
+	}
+	if !errors.Is(err, dbErr) {
+		t.Fatalf("expected dbErr %v, got: %v", dbErr, err)
+	}
+	if res != nil {
+		t.Fatal("expected nil result on login failure")
+	}
+}
+
+func TestAuthService_Login_MissingPermissionRepo_Fails(t *testing.T) {
+	userRepo := newMockUserRepo()
+	credentialRepo := newMockCredentialRepo()
+	externalIdentityRepo := newMockExternalIdentityRepo()
+	verificationRepo := newMockVerificationRepo()
+	resetRepo := newMockPasswordResetRepo()
+	emailSender := &mockEmailSender{}
+	hasher := helper.NewBcrypt()
+	jwtMgr := testJWTManager()
+
+	// Inject nil permission repo
+	svc := NewAuthService(
+		userRepo,
+		credentialRepo,
+		externalIdentityRepo,
+		verificationRepo,
+		resetRepo,
+		nil,
+		nil,
+		hasher,
+		jwtMgr,
+		emailSender,
+		nil,
+	)
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "missingpermrepo@example.com",
+		FullName:        "Missing Perm Repo",
+		IsActive:        true,
+		TokenVersion:    1,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	user.EmailVerifiedAt = &now
+
+	hash, _ := hasher.Hash("ValidPassword123")
+	_, _ = credentialRepo.Create(context.Background(), &domain.Credential{
+		UserID:       user.ID,
+		PasswordHash: &hash,
+	})
+
+	res, err := svc.Login(context.Background(), dto.LoginInput{
+		Email:    "missingpermrepo@example.com",
+		Password: "ValidPassword123",
+	})
+	if err == nil {
+		t.Fatal("expected error due to missing permission repository, got nil")
+	}
+	if !strings.Contains(err.Error(), "permission repository is required") {
+		t.Fatalf("expected permission repository required error, got: %v", err)
+	}
+	if res != nil {
+		t.Fatal("expected nil result on missing dependency error")
+	}
+}
+
+func TestAuthService_Login_MalformedPermissionData_Fails(t *testing.T) {
+	svc, userRepo, credentialRepo, _, permissionRepo, _, _ := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "malformedperm@example.com",
+		FullName:        "Malformed Perm",
+		IsActive:        true,
+		TokenVersion:    1,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	user.EmailVerifiedAt = &now
+
+	hasher := helper.NewBcrypt()
+	hash, err := hasher.Hash("ValidPassword123")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	_, err = credentialRepo.Create(context.Background(), &domain.Credential{
+		UserID:       user.ID,
+		PasswordHash: &hash,
+	})
+	if err != nil {
+		t.Fatalf("failed to create credential: %v", err)
+	}
+
+	permissionRepo.permissions[user.ID] = []domain.Permission{
+		{Resource: "bad:colons", Action: "read"},
+	}
+
+	res, err := svc.Login(context.Background(), dto.LoginInput{
+		Email:    "malformedperm@example.com",
+		Password: "ValidPassword123",
+	})
+	if err == nil {
+		t.Fatal("expected login to fail with malformed permission data")
+	}
+	if !errors.Is(err, helper.ErrMalformedPermission) {
+		t.Fatalf("expected ErrMalformedPermission, got: %v", err)
+	}
+	if res != nil {
+		t.Fatal("expected nil result on failure")
+	}
+}
+
+func TestAuthService_GoogleCallback_ExistingUser_LoadsPermissions(t *testing.T) {
+	svc, userRepo, _, externalIdentityRepo, permissionRepo, jwtMgr, oauthProvider := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "googleperm@example.com",
+		FullName:        "Google Perm User",
+		IsActive:        true,
+		TokenVersion:    7,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	email := user.Email
+	_, err = externalIdentityRepo.Create(context.Background(), &domain.ExternalIdentity{
+		UserID:          user.ID,
+		Provider:        "google",
+		ProviderSubject: "google-perm-subj-1",
+		EmailAtLink:     &email,
+	})
+	if err != nil {
+		t.Fatalf("create external identity: %v", err)
+	}
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-perm-subj-1",
+		Email:         user.Email,
+		VerifiedEmail: true,
+		Name:          user.FullName,
+	}
+
+	permissionRepo.permissions[user.ID] = []domain.Permission{
+		{Resource: "catalog", Action: "manage"},
+	}
+
+	state := "google-state-1"
+	res, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if err != nil {
+		t.Fatalf("unexpected GoogleCallback error: %v", err)
+	}
+
+	claims, err := jwtMgr.Validate(res.Token)
+	if err != nil {
+		t.Fatalf("token validation failed: %v", err)
+	}
+
+	if claims.TokenVersion != 7 {
+		t.Fatalf("expected token version 7, got %d", claims.TokenVersion)
+	}
+
+	expected := []string{"catalog:manage"}
+	if !reflect.DeepEqual(claims.Permissions, expected) {
+		t.Fatalf("expected permissions %+v, got %+v", expected, claims.Permissions)
+	}
+}
+
+func TestAuthService_GoogleCallback_LinkLocalUser_LoadsPermissions(t *testing.T) {
+	svc, userRepo, _, _, permissionRepo, jwtMgr, oauthProvider := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "googlelink@example.com",
+		FullName:        "Google Link User",
+		IsActive:        true,
+		TokenVersion:    3,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-link-subj-2",
+		Email:         user.Email,
+		VerifiedEmail: true,
+		Name:          user.FullName,
+	}
+
+	permissionRepo.permissions[user.ID] = []domain.Permission{
+		{Resource: "inventory", Action: "read"},
+	}
+
+	state := "google-state-2"
+	res, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if err != nil {
+		t.Fatalf("unexpected GoogleCallback error: %v", err)
+	}
+
+	claims, err := jwtMgr.Validate(res.Token)
+	if err != nil {
+		t.Fatalf("token validation failed: %v", err)
+	}
+
+	if claims.TokenVersion != 3 {
+		t.Fatalf("expected token version 3, got %d", claims.TokenVersion)
+	}
+
+	expected := []string{"inventory:read"}
+	if !reflect.DeepEqual(claims.Permissions, expected) {
+		t.Fatalf("expected permissions %+v, got %+v", expected, claims.Permissions)
+	}
+}
+
+func TestAuthService_GoogleCallback_NewUser_LoadsPermissions(t *testing.T) {
+	svc, _, _, _, _, jwtMgr, oauthProvider := setupTestAuthServiceWithPermissions()
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-new-subj-3",
+		Email:         "newgoogleuser@example.com",
+		VerifiedEmail: true,
+		Name:          "New Google User",
+	}
+
+	state := "google-state-3"
+	res, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if err != nil {
+		t.Fatalf("unexpected GoogleCallback error: %v", err)
+	}
+
+	claims, err := jwtMgr.Validate(res.Token)
+	if err != nil {
+		t.Fatalf("token validation failed: %v", err)
+	}
+
+	if claims.TokenVersion != 0 {
+		t.Fatalf("expected token version 0, got %d", claims.TokenVersion)
+	}
+
+	if claims.Permissions == nil || len(claims.Permissions) != 0 {
+		t.Fatalf("expected empty permissions slice, got %+v", claims.Permissions)
+	}
+}
+
+func TestAuthService_GoogleCallback_PermissionLookupFailure_Fails(t *testing.T) {
+	svc, userRepo, _, externalIdentityRepo, permissionRepo, _, oauthProvider := setupTestAuthServiceWithPermissions()
+
+	now := time.Now()
+	user, err := userRepo.Create(context.Background(), &domain.User{
+		Email:           "googlelookupfail@example.com",
+		FullName:        "Google Lookup Fail",
+		IsActive:        true,
+		TokenVersion:    1,
+		EmailVerifiedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	email := user.Email
+	_, err = externalIdentityRepo.Create(context.Background(), &domain.ExternalIdentity{
+		UserID:          user.ID,
+		Provider:        "google",
+		ProviderSubject: "google-lookup-fail-subj",
+		EmailAtLink:     &email,
+	})
+	if err != nil {
+		t.Fatalf("create external identity: %v", err)
+	}
+
+	oauthProvider.oauthUser = &helper.OAuthUser{
+		ID:            "google-lookup-fail-subj",
+		Email:         user.Email,
+		VerifiedEmail: true,
+		Name:          user.FullName,
+	}
+
+	dbErr := errors.New("permission repository failure during OAuth callback")
+	permissionRepo.err = dbErr
+
+	state := "google-state-fail"
+	res, err := svc.GoogleCallback(context.Background(), dto.GoogleCallbackInput{
+		Code:        "auth-code",
+		State:       state,
+		CookieState: state,
+	})
+	if err == nil {
+		t.Fatal("expected GoogleCallback to fail when permission lookup fails, but succeeded")
+	}
+	if !errors.Is(err, dbErr) {
+		t.Fatalf("expected dbErr %v, got: %v", dbErr, err)
+	}
+	if res != nil {
+		t.Fatal("expected nil result on failure")
 	}
 }
