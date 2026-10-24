@@ -136,6 +136,27 @@ type IdentityUserRole struct {
 	AssignedAt pgtype.Timestamptz
 }
 
+type MachineCredential struct {
+	ID         uuid.UUID
+	MachineID  uuid.UUID
+	SecretHash []byte
+	CreatedAt  pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
+	RevokedAt  pgtype.Timestamptz
+}
+
+type MachineGrant struct {
+	MachineID  uuid.UUID
+	Audience   string
+	Permission string
+}
+
+type MachineIdentity struct {
+	ID        uuid.UUID
+	Enabled   bool
+	CreatedAt pgtype.Timestamptz
+}
+
 type PasswordReset struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID

@@ -29,6 +29,9 @@ type Config struct {
 	JWTIssuer         string
 	JWTAudience       string
 	JWTExpiry         time.Duration
+	MachineJWTExpiry  time.Duration
+	TLSCertPath       string
+	TLSKeyPath        string
 	SMTP              SMTPConfig
 	GoogleOAuth       GoogleOAuthConfig
 }
@@ -77,6 +80,21 @@ func Load() (*Config, error) {
 		return nil, errors.New("JWT_EXPIRY must be between 1s and 15m")
 	}
 
+	machineExpiry := 5 * time.Minute
+	if raw := os.Getenv("MACHINE_JWT_EXPIRY"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, errors.New("invalid MACHINE_JWT_EXPIRY")
+		}
+		machineExpiry = parsed
+	}
+	if machineExpiry < time.Second || machineExpiry > 5*time.Minute || machineExpiry%time.Second != 0 {
+		return nil, errors.New("MACHINE_JWT_EXPIRY must be whole seconds from 1s through 5m")
+	}
+	tlsCert, tlsKey := os.Getenv("TLS_CERT_PATH"), os.Getenv("TLS_KEY_PATH")
+	if (tlsCert == "") != (tlsKey == "") {
+		return nil, errors.New("TLS_CERT_PATH and TLS_KEY_PATH must be configured together")
+	}
 	smtpPort := os.Getenv("SMTP_PORT")
 	if smtpPort == "" {
 		smtpPort = "587"
@@ -119,6 +137,9 @@ func Load() (*Config, error) {
 		JWTIssuer:         jwtIssuer,
 		JWTAudience:       jwtAudience,
 		JWTExpiry:         jwtExpiry,
+		MachineJWTExpiry:  machineExpiry,
+		TLSCertPath:       tlsCert,
+		TLSKeyPath:        tlsKey,
 		SMTP:              smtpConfig,
 		GoogleOAuth:       googleOAuthConfig,
 	}, nil

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/group-project/authentication/internal/router"
 	"github.com/group-project/authentication/internal/service"
 	"github.com/joho/godotenv"
+	"github.com/rs/zerolog"
 )
 
 func run() error {
@@ -82,10 +84,16 @@ func run() error {
 	)
 
 	authHandler := handler.NewAuthHandler(authSvc)
+	machineService, err := service.NewMachineService(postgres.NewMachineRepository(pool), privateKey, cfg.JWTIssuer, cfg.MachineJWTExpiry)
+	if err != nil {
+		return err
+	}
+	machineHandler := handler.NewMachineHandler(machineService, zerolog.New(os.Stderr).With().Timestamp().Logger())
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           router.NewRouter(authHandler, jwtManager, authSvc, pool).Router(),
+		Handler:           router.NewRouter(authHandler, jwtManager, authSvc, pool).WithMachineHandler(machineHandler).Router(),
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -95,7 +103,11 @@ func run() error {
 	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("server listening", "port", cfg.Port)
-		errCh <- srv.ListenAndServe()
+		if cfg.TLSCertPath != "" {
+			errCh <- srv.ListenAndServeTLS(cfg.TLSCertPath, cfg.TLSKeyPath)
+		} else {
+			errCh <- srv.ListenAndServe()
+		}
 	}()
 
 	select {
