@@ -18,11 +18,15 @@ type DatabaseHealthChecker interface {
 }
 
 type Route struct {
-	authHandler  *handler.AuthHandler
-	jwtManager   *helper.JWTManager
-	userProvider middleware.TokenUserProvider
-	dbHealth     DatabaseHealthChecker
+	authHandler    *handler.AuthHandler
+	jwtManager     *helper.JWTManager
+	userProvider   middleware.TokenUserProvider
+	dbHealth       DatabaseHealthChecker
+	machineHandler *handler.MachineHandler
 }
+
+// WithMachineHandler registers only issuance; provisioning stays internal.
+func (s *Route) WithMachineHandler(h *handler.MachineHandler) *Route { s.machineHandler = h; return s }
 
 func NewRouter(
 	h *handler.AuthHandler,
@@ -43,7 +47,7 @@ func (s *Route) Router() *gin.Engine {
 
 	// Skip noisy probe logs for /health and /ready; keep all other requests logged.
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/health", "/ready"},
+		SkipPaths: []string{"/health", "/ready", "/api/v1/auth/service-token"},
 	}))
 	r.Use(gin.Recovery(), middleware.CORS())
 
@@ -75,6 +79,9 @@ func (s *Route) Router() *gin.Engine {
 	})
 
 	api := r.Group("/api/v1/auth")
+	if s.machineHandler != nil {
+		api.POST("/service-token", s.machineHandler.Token)
+	}
 	{
 		api.POST("/register", s.authHandler.Register)
 		api.POST("/login", s.authHandler.Login)
