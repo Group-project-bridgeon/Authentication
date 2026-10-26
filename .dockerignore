@@ -1,0 +1,30 @@
+# Version control
+.git
+.gitignore
+
+# Real secrets — never copy into build context
+.env
+.env.*
+!.env.example
+
+# Local JWT keys
+/keys/
+
+# Local development artifacts
+bin/
+tmp/
+*.log
+
+# Local build output
+server
+server.exe
+
+# Test coverage reports
+coverage.out
+coverage.html
+
+# IDE / editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
