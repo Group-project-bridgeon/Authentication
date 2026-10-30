@@ -11,7 +11,7 @@ UPDATE machine_identities SET enabled=$2 WHERE id=$1;
 INSERT INTO machine_grants(machine_id,audience,permission) VALUES ($1,'catalog-stock-references','catalog.stock-references:read') ON CONFLICT DO NOTHING;
 
 -- name: RevokeMachineGrant :exec
-DELETE FROM machine_grants WHERE machine_id=$1;
+DELETE FROM machine_grants WHERE machine_id=$1 AND audience='catalog-stock-references' AND permission='catalog.stock-references:read';
 
 -- name: MachineHasGrant :one
 SELECT EXISTS(SELECT 1 FROM machine_grants WHERE machine_id=$1 AND audience='catalog-stock-references' AND permission='catalog.stock-references:read');
@@ -33,3 +33,15 @@ UPDATE machine_credentials SET expires_at=LEAST(expires_at,clock_timestamp()+int
 
 -- name: MachineClock :one
 SELECT clock_timestamp()::timestamptz AS now;
+
+-- All requested, exact grants must be present under the one requested audience.
+-- name: MachineHasAuthority :one
+SELECT count(*)=cardinality(sqlc.arg(permissions)::text[]) AS granted FROM machine_grants
+WHERE machine_id=sqlc.arg(machine_id) AND audience=sqlc.arg(audience)
+AND permission=ANY(sqlc.arg(permissions)::text[]);
+
+-- name: GrantMachineAuthority :exec
+INSERT INTO machine_grants(machine_id,audience,permission) VALUES($1,$2,$3) ON CONFLICT DO NOTHING;
+
+-- name: RevokeMachineAuthority :exec
+DELETE FROM machine_grants WHERE machine_id=$1 AND audience=$2 AND permission=$3;

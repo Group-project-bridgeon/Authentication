@@ -120,6 +120,34 @@ func (r *MachineRepository) Rotate(ctx context.Context, id, credential uuid.UUID
 	return expiry, nil
 }
 func (r *MachineRepository) Issue(ctx context.Context, id, credential uuid.UUID, hash []byte, sign func(time.Time) (string, error)) (string, error) {
+	return r.IssueFor(ctx, id, credential, hash, domain.CatalogAuthority(), sign)
+}
+
+// Internal lifecycle boundary, deliberately not a public provisioning endpoint.
+// Serialize scoped grant changes with issuance using the existing machine row lock.
+func (r *MachineRepository) SetAuthorityGrant(ctx context.Context, id uuid.UUID, a domain.MachineAuthority, enabled bool) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	return r.transaction(ctx, id, false, func(ctx context.Context, q *db.Queries, _ bool) error {
+		for _, permission := range a.Permissions {
+			var err error
+			if enabled {
+				err = q.GrantMachineAuthority(ctx, db.GrantMachineAuthorityParams{MachineID: id, Audience: a.Audience, Permission: permission})
+			} else {
+				err = q.RevokeMachineAuthority(ctx, db.RevokeMachineAuthorityParams{MachineID: id, Audience: a.Audience, Permission: permission})
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+func (r *MachineRepository) IssueFor(ctx context.Context, id, credential uuid.UUID, hash []byte, authority domain.MachineAuthority, sign func(time.Time) (string, error)) (string, error) {
+	if err := authority.Validate(); err != nil {
+		return "", err
+	}
 	var token string
 	err := r.transaction(ctx, id, false, func(ctx context.Context, q *db.Queries, enabled bool) error {
 		row, err := q.GetMachineCredential(ctx, db.GetMachineCredentialParams{MachineID: id, ID: credential})
@@ -133,7 +161,7 @@ func (r *MachineRepository) Issue(ctx context.Context, id, credential uuid.UUID,
 		if err != nil {
 			return err
 		}
-		granted, err := q.MachineHasGrant(ctx, id)
+		granted, err := q.MachineHasAuthority(ctx, db.MachineHasAuthorityParams{MachineID: id, Audience: authority.Audience, Permissions: authority.Permissions})
 		if err != nil {
 			return err
 		}

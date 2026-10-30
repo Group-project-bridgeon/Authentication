@@ -62,6 +62,21 @@ func (q *Queries) GrantMachine(ctx context.Context, machineID uuid.UUID) error {
 	return err
 }
 
+const grantMachineAuthority = `-- name: GrantMachineAuthority :exec
+INSERT INTO machine_grants(machine_id,audience,permission) VALUES($1,$2,$3) ON CONFLICT DO NOTHING
+`
+
+type GrantMachineAuthorityParams struct {
+	MachineID  uuid.UUID
+	Audience   string
+	Permission string
+}
+
+func (q *Queries) GrantMachineAuthority(ctx context.Context, arg GrantMachineAuthorityParams) error {
+	_, err := q.db.Exec(ctx, grantMachineAuthority, arg.MachineID, arg.Audience, arg.Permission)
+	return err
+}
+
 const insertMachineCredential = `-- name: InsertMachineCredential :exec
 INSERT INTO machine_credentials(id,machine_id,secret_hash,created_at,expires_at) VALUES ($1,$2,$3,$4,$5)
 `
@@ -112,6 +127,26 @@ func (q *Queries) MachineClock(ctx context.Context) (pgtype.Timestamptz, error) 
 	return now, err
 }
 
+const machineHasAuthority = `-- name: MachineHasAuthority :one
+SELECT count(*)=cardinality($1::text[]) AS granted FROM machine_grants
+WHERE machine_id=$2 AND audience=$3
+AND permission=ANY($1::text[])
+`
+
+type MachineHasAuthorityParams struct {
+	Permissions []string
+	MachineID   uuid.UUID
+	Audience    string
+}
+
+// All requested, exact grants must be present under the one requested audience.
+func (q *Queries) MachineHasAuthority(ctx context.Context, arg MachineHasAuthorityParams) (bool, error) {
+	row := q.db.QueryRow(ctx, machineHasAuthority, arg.Permissions, arg.MachineID, arg.Audience)
+	var granted bool
+	err := row.Scan(&granted)
+	return granted, err
+}
+
 const machineHasGrant = `-- name: MachineHasGrant :one
 SELECT EXISTS(SELECT 1 FROM machine_grants WHERE machine_id=$1 AND audience='catalog-stock-references' AND permission='catalog.stock-references:read')
 `
@@ -129,6 +164,21 @@ UPDATE machine_credentials AS c SET revoked_at=clock_timestamp() WHERE c.machine
 
 func (q *Queries) RetireMachineOverlap(ctx context.Context, machineID uuid.UUID) error {
 	_, err := q.db.Exec(ctx, retireMachineOverlap, machineID)
+	return err
+}
+
+const revokeMachineAuthority = `-- name: RevokeMachineAuthority :exec
+DELETE FROM machine_grants WHERE machine_id=$1 AND audience=$2 AND permission=$3
+`
+
+type RevokeMachineAuthorityParams struct {
+	MachineID  uuid.UUID
+	Audience   string
+	Permission string
+}
+
+func (q *Queries) RevokeMachineAuthority(ctx context.Context, arg RevokeMachineAuthorityParams) error {
+	_, err := q.db.Exec(ctx, revokeMachineAuthority, arg.MachineID, arg.Audience, arg.Permission)
 	return err
 }
 
@@ -150,7 +200,7 @@ func (q *Queries) RevokeMachineCredential(ctx context.Context, arg RevokeMachine
 }
 
 const revokeMachineGrant = `-- name: RevokeMachineGrant :exec
-DELETE FROM machine_grants WHERE machine_id=$1
+DELETE FROM machine_grants WHERE machine_id=$1 AND audience='catalog-stock-references' AND permission='catalog.stock-references:read'
 `
 
 func (q *Queries) RevokeMachineGrant(ctx context.Context, machineID uuid.UUID) error {

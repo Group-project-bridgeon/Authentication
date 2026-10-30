@@ -117,3 +117,75 @@ Slice 4c remains next: approved secured reference transport, actual Inventory
 adapter, timeout/body budgets and finalized freshness policy. Normal deployment,
 TLS/key distribution, secure provisioning/delivery and multi-instance abuse
 controls remain operational prerequisites. No normal machine/grant was provisioned.
+
+
+## Milestone 8 approved reservation authority extension (2026-10-27)
+
+The earlier fixed-authority sections describe the original Catalog milestone.
+Migration 000011 adds the separate exact audience `inventory-reservations` with
+only `inventory.reservations:consume`, `inventory.reservations:read`,
+`inventory.reservations:release`, `inventory.reservations:reserve`. The user approved
+machine-only Inventory reservation access. No human permission definition, automatic
+grant or identity is added. Catalog's original audience/single scope remain unchanged.
+
+The same TLS-only Basic endpoint accepts a canonical space-separated sorted unique
+subset of these four scopes (at least one); all requested scopes must be explicitly
+granted to the verified machine under that audience. Missing, duplicate, unsorted,
+unknown or cross-audience scopes reject; there is no all-scope default. Issuance
+returns only the requested subset. Example non-secret form values:
+
+```text
+grant_type=client_credentials
+audience=inventory-reservations
+scope=inventory.reservations:read inventory.reservations:release
+```
+
+Form-encode those values and supply Basic credentials over verified TLS, never in
+the URL/body. The JWT retains separate machine UUID/subject/kind, integer iat=nbf,
+maximum issued lifetime 300 seconds, and no human user_id/refresh/token_version.
+Inventory verifies exact audience/scope and allows at most 30 seconds clock tolerance,
+which does not enlarge the issued lifetime. Existing 256-bit hashed-only credentials,
+mandatory <=90-day expiry, <=two usable credentials, <=24-hour overlap and immediate
+future-issuance revocation remain unchanged. Already-issued JWTs can remain valid
+until expiry plus tolerance; no online grant/credential revocation is claimed.
+
+Internal `SetAuthorityGrant` reuses the same bounded machine-row-lock lifecycle
+transaction as issuance and changes only the explicitly requested authority pairs.
+The legacy `SetGrant`/operator command remains Catalog-specific; revoking its Catalog
+grant preserves reservation grants. No public scoped provisioning endpoint or normal
+provisioning is added. Normal lifecycle execution/tooling needs a separate reviewed
+plan. Rotating credentials for the same machine preserves Inventory ownership;
+replacing a machine identity does not transfer existing holds.
+
+Apply schema 11 before using these new grants; its down migration refuses populated
+reservation grants and preserves them transactionally. A failed down may leave a
+dirty migrate marker; inspect schema/data and use reviewed forward recovery instead
+of deleting grants or forcing a marker without a plan. Disposable verification uses
+real Auth issuance into Inventory through HTTPS Kong plus real PostgreSQL lifecycle
+services. Synthetic Sales machines exist only in fixtures. See
+[Inventory reservation contract](../../Inventory-Service/docs/stock-reservations-spec.md).
+
+
+## Milestone 9 exact fulfillment authority (2026-10-27)
+
+Auth000012 extends the machine allowlist only with audience inventory-fulfillment:
+resource inventory.dispatches, actions create/cancel/read. Canonical full-scope form
+is `inventory.dispatches:cancel inventory.dispatches:create inventory.dispatches:read`;
+requested scopes may be a sorted unique nonempty subset. Every requested grant is
+required. Machine dispatch/update, hyphenated draft aliases and bare resources reject.
+Existing TLS Basic/form, hashed expiring credentials, lifetime/rotation/revocation
+limits and Catalog/reservation authority remain unchanged. No new endpoint or normal
+machine provisioning is introduced. Existing local admin CLI remains Catalog-specific.
+
+Human definitions only: resource inventory.dispatches/action dispatch; resource
+inventory.deliveries/action update; resource inventory.dispatches/action read.
+The corresponding exact GLOBAL human grants permit cross-owner/warehouse operations
+without impersonation. Machine permissions never confer human authority; human
+permissions never confer Sales create/cancel. Actual human actor is audited separately
+from owner. No users/roles/grants are seeded. Signed human/machine JWTs remain
+stateless; renewed tokens reflect revoked grants, with no online-revocation claim.
+
+Empty Auth12 down/reapply is supported; populated fulfillment grants cause refusal.
+Permission definitions are retained to protect pre-existing rows/grants. Normal
+migration/grant execution needs separate reviewed authorization/backups; no normal
+changes ran in this milestone. See [fulfillment contract](../../Inventory-Service/docs/fulfillment-spec.md).
