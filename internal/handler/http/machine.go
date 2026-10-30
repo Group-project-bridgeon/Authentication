@@ -107,7 +107,8 @@ func (h *MachineHandler) Token(c *gin.Context) {
 		fail(400, "unsupported_grant_type", "grant_type", nil)
 		return
 	}
-	if fields.Get("audience") != domain.MachineAudience || fields.Get("scope") != domain.MachinePermission {
+	authority, authorityError := domain.ParseMachineAuthority(fields.Get("audience"), fields.Get("scope"))
+	if authorityError != nil {
 		fail(400, "invalid_request", "authority", nil)
 		return
 	}
@@ -118,7 +119,16 @@ func (h *MachineHandler) Token(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	token, err := h.issuer.Issue(ctx, client, password)
+	var token string
+	if authority.Audience == domain.MachineAudience {
+		token, err = h.issuer.Issue(ctx, client, password)
+	} else if scoped, ok := h.issuer.(interface {
+		IssueFor(context.Context, string, string, domain.MachineAuthority) (string, error)
+	}); ok {
+		token, err = scoped.IssueFor(ctx, client, password, authority)
+	} else {
+		err = domain.ErrMachineUnavailable
+	}
 	if err != nil {
 		if errors.Is(err, domain.ErrMachineClient) {
 			fail(401, "invalid_client", "client_authentication", nil)

@@ -41,6 +41,16 @@ func (s *MachineService) SetEnabled(ctx context.Context, id uuid.UUID, value boo
 func (s *MachineService) SetGrant(ctx context.Context, id uuid.UUID, value bool) error {
 	return s.repo.SetGrant(ctx, id, value)
 }
+
+func (s *MachineService) SetAuthorityGrant(ctx context.Context, id uuid.UUID, a domain.MachineAuthority, value bool) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	if scoped, ok := s.repo.(domain.ScopedMachineGrantRepository); ok {
+		return scoped.SetAuthorityGrant(ctx, id, a, value)
+	}
+	return domain.ErrMachineUnavailable
+}
 func (s *MachineService) Revoke(ctx context.Context, id, credential uuid.UUID) error {
 	return s.repo.Revoke(ctx, id, credential)
 }
@@ -65,6 +75,12 @@ func (s *MachineService) Rotate(ctx context.Context, id uuid.UUID, age time.Dura
 	return domain.MachineCredential{ID: cid, Secret: cid.String() + "." + encoded, ExpiresAt: expires}, nil
 }
 func (s *MachineService) Issue(ctx context.Context, client, password string) (string, error) {
+	return s.IssueFor(ctx, client, password, domain.CatalogAuthority())
+}
+func (s *MachineService) IssueFor(ctx context.Context, client, password string, authority domain.MachineAuthority) (string, error) {
+	if err := authority.Validate(); err != nil {
+		return "", err
+	}
 	id, err := uuid.Parse(client)
 	if err != nil || id == uuid.Nil || id.String() != client {
 		return "", domain.ErrMachineClient
@@ -82,17 +98,24 @@ func (s *MachineService) Issue(ctx context.Context, client, password string) (st
 		return "", domain.ErrMachineClient
 	}
 	hash := sha256.Sum256(secret)
-	return s.repo.Issue(ctx, id, cid, hash[:], func(now time.Time) (string, error) {
+	sign := func(now time.Time) (string, error) {
 		jti, err := uuid.NewV7()
 		if err != nil {
 			return "", domain.ErrMachineUnavailable
 		}
 		now = now.UTC().Truncate(time.Second)
-		claims := jwt.MapClaims{"iss": s.issuer, "aud": []string{domain.MachineAudience}, "sub": "machine:" + id.String(), "client_id": id.String(), "token_kind": "machine", "permissions": []string{domain.MachinePermission}, "jti": jti.String(), "iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(s.ttl).Unix()}
+		claims := jwt.MapClaims{"iss": s.issuer, "aud": []string{authority.Audience}, "sub": "machine:" + id.String(), "client_id": id.String(), "token_kind": "machine", "permissions": authority.Permissions, "jti": jti.String(), "iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(s.ttl).Unix()}
 		token, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(s.key)
 		if err != nil {
 			return "", domain.ErrMachineUnavailable
 		}
 		return token, nil
-	})
+	}
+	if scoped, ok := s.repo.(domain.ScopedMachineRepository); ok {
+		return scoped.IssueFor(ctx, id, cid, hash[:], authority, sign)
+	}
+	if authority.Audience == domain.MachineAudience {
+		return s.repo.Issue(ctx, id, cid, hash[:], sign)
+	}
+	return "", domain.ErrMachineUnavailable
 }
