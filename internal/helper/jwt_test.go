@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -572,3 +573,151 @@ func TestJWTManager_RequiresVersionAndNumericDates(t *testing.T) {
 		})
 	}
 }
+
+func TestJWTManager_ManagerServiceVerifierContract(t *testing.T) {
+	manager := newTestJWTManager(t)
+
+	type ManagerCustomClaims struct {
+		jwt.RegisteredClaims
+		UserID       string   `json:"user_id"`
+		Email        string   `json:"email"`
+		TokenVersion *int     `json:"token_version"`
+		Permissions  []string `json:"permissions"`
+	}
+
+	verifyManagerToken := func(tokenString string) (*ManagerCustomClaims, error) {
+		if strings.TrimSpace(tokenString) == "" {
+			return nil, errors.New("blank token")
+		}
+		var claims ManagerCustomClaims
+		parsedToken, err := jwt.ParseWithClaims(
+			tokenString,
+			&claims,
+			func(t *jwt.Token) (interface{}, error) {
+				if t.Method != jwt.SigningMethodRS256 {
+					return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+				}
+				return manager.publicKey, nil
+			},
+			jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+			jwt.WithIssuer("erp-auth"),
+			jwt.WithAudience("erp-api"),
+			jwt.WithExpirationRequired(),
+			jwt.WithIssuedAt(),
+			jwt.WithNotBeforeRequired(),
+			jwt.WithLeeway(0),
+		)
+		if err != nil || parsedToken == nil || !parsedToken.Valid {
+			return nil, errors.New("invalid signature or claims")
+		}
+
+		if claims.ExpiresAt == nil || claims.IssuedAt == nil || claims.NotBefore == nil {
+			return nil, errors.New("missing timestamps")
+		}
+		if !claims.ExpiresAt.After(claims.IssuedAt.Time) {
+			return nil, errors.New("exp not after iat")
+		}
+		lifetime := claims.ExpiresAt.Sub(claims.IssuedAt.Time)
+		if lifetime > 15*time.Minute {
+			return nil, errors.New("lifetime exceeds 15m")
+		}
+
+		if claims.UserID == "" || claims.Subject == "" || claims.UserID != claims.Subject {
+			return nil, errors.New("user_id != sub")
+		}
+		if _, err := uuid.Parse(claims.UserID); err != nil {
+			return nil, errors.New("invalid uuid")
+		}
+
+		if claims.Email == "" {
+			return nil, errors.New("empty email")
+		}
+
+		if claims.TokenVersion == nil || *claims.TokenVersion < 0 {
+			return nil, errors.New("invalid token version")
+		}
+
+		if claims.Permissions == nil || len(claims.Permissions) == 0 {
+			return nil, errors.New("empty permissions")
+		}
+		for _, perm := range claims.Permissions {
+			parts := strings.Split(perm, ":")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return nil, errors.New("malformed permission")
+			}
+		}
+
+		return &claims, nil
+	}
+
+	t.Run("admin token with 6 manager permissions satisfies verifier", func(t *testing.T) {
+		adminID := uuid.New()
+		adminEmail := "admin@erp.local"
+		adminPerms := []string{
+			"manager.approvals:approve",
+			"manager.approvals:read",
+			"manager.approvals:reject",
+			"manager.approvals:submit",
+			"manager.authz:check",
+			"manager.rbac:manage",
+		}
+
+		tok, err := manager.GenerateWithPermissions(adminID, adminEmail, 1, adminPerms)
+		if err != nil {
+			t.Fatalf("unexpected token generation error: %v", err)
+		}
+
+		claims, err := verifyManagerToken(tok)
+		if err != nil {
+			t.Fatalf("manager verifier rejected admin token: %v", err)
+		}
+
+		if claims.UserID != adminID.String() || claims.Subject != adminID.String() {
+			t.Errorf("expected user_id and sub %s, got user_id %s, sub %s", adminID, claims.UserID, claims.Subject)
+		}
+		if claims.Email != adminEmail {
+			t.Errorf("expected email %s, got %s", adminEmail, claims.Email)
+		}
+		if claims.TokenVersion == nil || *claims.TokenVersion != 1 {
+			t.Errorf("expected token_version 1, got %v", claims.TokenVersion)
+		}
+		if len(claims.Permissions) != 6 {
+			t.Errorf("expected 6 permissions, got %d", len(claims.Permissions))
+		}
+	})
+
+	t.Run("manager token with manager approval permissions satisfies verifier", func(t *testing.T) {
+		mgrID := uuid.New()
+		mgrEmail := "manager@erp.local"
+		mgrPerms := []string{
+			"manager.approvals:approve",
+			"manager.approvals:read",
+			"manager.approvals:reject",
+			"manager.approvals:submit",
+		}
+
+		tok, err := manager.GenerateWithPermissions(mgrID, mgrEmail, 1, mgrPerms)
+		if err != nil {
+			t.Fatalf("unexpected token generation error: %v", err)
+		}
+
+		claims, err := verifyManagerToken(tok)
+		if err != nil {
+			t.Fatalf("manager verifier rejected manager token: %v", err)
+		}
+
+		if claims.UserID != mgrID.String() || claims.Subject != mgrID.String() {
+			t.Errorf("expected user_id and sub %s, got user_id %s, sub %s", mgrID, claims.UserID, claims.Subject)
+		}
+		if claims.Email != mgrEmail {
+			t.Errorf("expected email %s, got %s", mgrEmail, claims.Email)
+		}
+		if claims.TokenVersion == nil || *claims.TokenVersion != 1 {
+			t.Errorf("expected token_version 1, got %v", claims.TokenVersion)
+		}
+		if len(claims.Permissions) != 4 {
+			t.Errorf("expected 4 permissions, got %d", len(claims.Permissions))
+		}
+	})
+}
+
