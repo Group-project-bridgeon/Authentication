@@ -2335,3 +2335,148 @@ func TestAuthService_GoogleCallback_PermissionLookupFailure_Fails(t *testing.T) 
 		t.Fatal("expected nil result on failure")
 	}
 }
+
+func TestAuthService_Login_ManagerPermissionsContract(t *testing.T) {
+	svc, userRepo, credentialRepo, _, permissionRepo, jwtMgr, _ := setupTestAuthServiceWithPermissions()
+	now := time.Now()
+
+	hasher := helper.NewBcrypt()
+	hash, err := hasher.Hash("ValidPassword123")
+	if err != nil {
+		t.Fatalf("failed to hash password: %v", err)
+	}
+
+	t.Run("test admin login yields fresh token satisfying manager verifier", func(t *testing.T) {
+		adminUser, err := userRepo.Create(context.Background(), &domain.User{
+			Email:           "admin@erp.local",
+			FullName:        "Test Admin",
+			IsActive:        true,
+			TokenVersion:    1,
+			EmailVerifiedAt: &now,
+		})
+		if err != nil {
+			t.Fatalf("create admin user: %v", err)
+		}
+		adminUser.EmailVerifiedAt = &now
+
+		_, err = credentialRepo.Create(context.Background(), &domain.Credential{
+			UserID:       adminUser.ID,
+			PasswordHash: &hash,
+		})
+		if err != nil {
+			t.Fatalf("create admin credential: %v", err)
+		}
+
+		permissionRepo.permissions[adminUser.ID] = []domain.Permission{
+			{Resource: "manager.approvals", Action: "approve"},
+			{Resource: "manager.approvals", Action: "read"},
+			{Resource: "manager.approvals", Action: "reject"},
+			{Resource: "manager.approvals", Action: "submit"},
+			{Resource: "manager.authz", Action: "check"},
+			{Resource: "manager.rbac", Action: "manage"},
+		}
+
+		loginRes, err := svc.Login(context.Background(), dto.LoginInput{
+			Email:    "admin@erp.local",
+			Password: "ValidPassword123",
+		})
+		if err != nil {
+			t.Fatalf("admin login failed: %v", err)
+		}
+
+		claims, err := jwtMgr.Validate(loginRes.Token)
+		if err != nil {
+			t.Fatalf("validate token: %v", err)
+		}
+
+		// Verify manager verifier contract
+		if claims.UserID != adminUser.ID || claims.Subject != adminUser.ID.String() {
+			t.Fatalf("expected user_id equal to sub (%s), got user_id %s, sub %s", adminUser.ID, claims.UserID, claims.Subject)
+		}
+		if claims.Email != "admin@erp.local" {
+			t.Fatalf("expected email admin@erp.local, got %s", claims.Email)
+		}
+		if claims.TokenVersion != 1 {
+			t.Fatalf("expected token_version 1, got %d", claims.TokenVersion)
+		}
+		if len(claims.Permissions) != 6 {
+			t.Fatalf("expected 6 permissions, got %d", len(claims.Permissions))
+		}
+		for _, p := range claims.Permissions {
+			parts := strings.Split(p, ":")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				t.Fatalf("invalid permission format: %s", p)
+			}
+		}
+		lifetime := claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time)
+		if lifetime <= 0 || lifetime > 15*time.Minute {
+			t.Fatalf("expected lifetime <= 15m, got %v", lifetime)
+		}
+	})
+
+	t.Run("test manager login yields fresh token satisfying manager verifier", func(t *testing.T) {
+		managerUser, err := userRepo.Create(context.Background(), &domain.User{
+			Email:           "manager@erp.local",
+			FullName:        "Test Manager",
+			IsActive:        true,
+			TokenVersion:    1,
+			EmailVerifiedAt: &now,
+		})
+		if err != nil {
+			t.Fatalf("create manager user: %v", err)
+		}
+		managerUser.EmailVerifiedAt = &now
+
+		_, err = credentialRepo.Create(context.Background(), &domain.Credential{
+			UserID:       managerUser.ID,
+			PasswordHash: &hash,
+		})
+		if err != nil {
+			t.Fatalf("create manager credential: %v", err)
+		}
+
+		permissionRepo.permissions[managerUser.ID] = []domain.Permission{
+			{Resource: "manager.approvals", Action: "approve"},
+			{Resource: "manager.approvals", Action: "read"},
+			{Resource: "manager.approvals", Action: "reject"},
+			{Resource: "manager.approvals", Action: "submit"},
+		}
+
+		loginRes, err := svc.Login(context.Background(), dto.LoginInput{
+			Email:    "manager@erp.local",
+			Password: "ValidPassword123",
+		})
+		if err != nil {
+			t.Fatalf("manager login failed: %v", err)
+		}
+
+		claims, err := jwtMgr.Validate(loginRes.Token)
+		if err != nil {
+			t.Fatalf("validate token: %v", err)
+		}
+
+		// Verify manager verifier contract
+		if claims.UserID != managerUser.ID || claims.Subject != managerUser.ID.String() {
+			t.Fatalf("expected user_id equal to sub (%s), got user_id %s, sub %s", managerUser.ID, claims.UserID, claims.Subject)
+		}
+		if claims.Email != "manager@erp.local" {
+			t.Fatalf("expected email manager@erp.local, got %s", claims.Email)
+		}
+		if claims.TokenVersion != 1 {
+			t.Fatalf("expected token_version 1, got %d", claims.TokenVersion)
+		}
+		if len(claims.Permissions) != 4 {
+			t.Fatalf("expected 4 permissions, got %d", len(claims.Permissions))
+		}
+		for _, p := range claims.Permissions {
+			parts := strings.Split(p, ":")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				t.Fatalf("invalid permission format: %s", p)
+			}
+		}
+		lifetime := claims.ExpiresAt.Time.Sub(claims.IssuedAt.Time)
+		if lifetime <= 0 || lifetime > 15*time.Minute {
+			t.Fatalf("expected lifetime <= 15m, got %v", lifetime)
+		}
+	})
+}
